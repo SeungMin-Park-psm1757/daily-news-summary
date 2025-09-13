@@ -1,0 +1,32 @@
+name: Daily News Summary
+
+on:
+  schedule:
+    # 매일 오전 07:50 (UTC 22:50 = KST 07:50)
+    - cron: '50 22 * * *'
+  workflow_dispatch:  # 수동 실행 가능
+
+jobs:
+  news-summary:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Run news automation
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        KAKAO_ACCESS_TOKEN: ${{ secrets.KAKAO_ACCESS_TOKEN }}
+      run: |
+        python news_automation.py
