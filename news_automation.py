@@ -1,4 +1,4 @@
-news_automation_content = '''#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 import os
@@ -75,8 +75,8 @@ def clean_text(text):
     clean_text = soup.get_text()
     
     # 특수 문자 및 공백 정리
-    clean_text = re.sub(r'\\s+', ' ', clean_text)
-    clean_text = re.sub(r'[\\r\\n\\t]', ' ', clean_text)
+    clean_text = re.sub(r'\s+', ' ', clean_text)
+    clean_text = re.sub(r'[\r\n\t]', ' ', clean_text)
     clean_text = clean_text.strip()
     
     return clean_text[:500]  # 최대 500자로 제한
@@ -100,7 +100,7 @@ def is_recent_article(published_date, hours=24):
 
 def collect_news_by_keyword(keyword, max_domestic=5, max_international=2):
     """키워드별 뉴스 수집"""
-    print(f"\\n📰 [{keyword}] 뉴스 수집 중...")
+    print(f"\n📰 [{keyword}] 뉴스 수집 중...")
     
     domestic_articles = []
     international_articles = []
@@ -185,7 +185,7 @@ def summarize_news_with_gemini(keyword, articles):
     articles_text = ""
     for i, article in enumerate(articles, 1):
         source_type = "해외" if article['source'] == 'international' else "국내"
-        articles_text += f"\\n[{source_type} 기사 {i}]\\n제목: {article['title']}\\n내용: {article['summary'][:300]}\\n"
+        articles_text += f"\n[{source_type} 기사 {i}]\n제목: {article['title']}\n내용: {article['summary'][:300]}\n"
     
     # Gemini 프롬프트
     prompt = f"""다음은 '{keyword}' 관련 오늘의 주요 뉴스들입니다. 이를 바탕으로 핵심 내용을 한국어로 요약해주세요.
@@ -225,7 +225,7 @@ def summarize_news_with_gemini(keyword, articles):
             
         print(f"  ✅ [{keyword}] 요약 완료 ({len(summary)}자, {len(sentences)}문장)")
         
-        return f"[{keyword}]\\n{summary}"
+        return f"[{keyword}]\n{summary}"
         
     except Exception as e:
         print(f"  ❌ [{keyword}] 요약 실패: {str(e)}")
@@ -268,7 +268,7 @@ def send_kakao_message(text_message):
     
     # 메시지 길이 제한 (카카오톡 제한 고려)
     if len(text_message) > 1000:
-        text_message = text_message[:1000] + "\\n\\n(전체 내용이 길어 일부만 표시됩니다)"
+        text_message = text_message[:1000] + "\n\n(전체 내용이 길어 일부만 표시됩니다)"
     
     # 텍스트 메시지 구성
     template_object = {
@@ -320,7 +320,7 @@ async def main():
     # 키워드별 뉴스 수집 및 요약
     for keyword in KEYWORD_FEEDS.keys():
         try:
-            print(f"\\n{'='*60}")
+            print(f"\n{'='*60}")
             print(f"🎯 [{keyword}] 처리 시작")
             
             # 뉴스 수집
@@ -349,19 +349,19 @@ async def main():
     today = datetime.now().strftime('%Y년 %m월 %d일 %A')
     header = f"📰 {today} 주요 뉴스 요약"
     
-    full_message = header + "\\n" + "="*50 + "\\n\\n"
-    full_message += "\\n\\n".join(all_summaries)
+    full_message = header + "\n" + "="*50 + "\n\n"
+    full_message += "\n\n".join(all_summaries)
     
     # 실행 정보 추가
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
-    footer = f"\\n\\n📊 처리 결과: {success_count}/{len(KEYWORD_FEEDS)}개 키워드 완료"
-    footer += f"\\n⏱️ 처리 시간: {duration:.1f}초"
-    footer += f"\\n🕐 생성 시간: {end_time.strftime('%H:%M')}"
+    footer = f"\n\n📊 처리 결과: {success_count}/{len(KEYWORD_FEEDS)}개 키워드 완료"
+    footer += f"\n⏱️ 처리 시간: {duration:.1f}초"
+    footer += f"\n🕐 생성 시간: {end_time.strftime('%H:%M')}"
     
     full_message += footer
     
-    print(f"\\n{'='*60}")
+    print(f"\n{'='*60}")
     print("📝 최종 요약 생성 완료")
     print(f"📊 총 길이: {len(full_message)}자")
     print(f"⏱️ 총 처리 시간: {duration:.1f}초")
@@ -386,12 +386,12 @@ async def main():
     
     # 최종 결과
     if success:
-        print("\\n🎉 뉴스 요약 봇 실행 완료!")
+        print("\n🎉 뉴스 요약 봇 실행 완료!")
         print("📱 카카오톡으로 요약이 전송되었습니다.")
     else:
-        print("\\n⚠️ 메시지 전송은 실패했지만, 요약 생성은 완료되었습니다.")
+        print("\n⚠️ 메시지 전송은 실패했지만, 요약 생성은 완료되었습니다.")
     
-    print(f"\\n📋 요약 미리보기:")
+    print(f"\n📋 요약 미리보기:")
     print("-" * 50)
     print(full_message[:500] + "..." if len(full_message) > 500 else full_message)
 
@@ -399,32 +399,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\\n⏹️ 사용자에 의해 중단되었습니다.")
+        print("\n⏹️ 사용자에 의해 중단되었습니다.")
     except Exception as e:
-        print(f"\\n💥 예상치 못한 오류 발생: {str(e)}")
+        print(f"\n💥 예상치 못한 오류 발생: {str(e)}")
         sys.exit(1)
-'''
-
-# 파일로 저장
-with open('news_automation.py', 'w', encoding='utf-8') as f:
-    f.write(news_automation_content)
-
-print("=== 📄 완전한 news_automation.py 스크립트 생성 완료! ===")
-print()
-print("✅ news_automation.py 파일이 생성되었습니다.")
-print("📏 총 길이:", len(news_automation_content), "자")
-print()
-print("🔧 주요 개선 사항:")
-print("- asyncio-run 의존성 제거 (표준 라이브러리 사용)")
-print("- 강화된 에러 핸들링 및 로깅")  
-print("- RSS 파싱 안정성 개선")
-print("- HTML 태그 제거 및 텍스트 정리")
-print("- 카카오톡 메시지 길이 제한 처리")
-print("- 실행 시간 및 성공률 모니터링")
-print("- 음성 변환 선택적 적용")
-print("- 더 자연스러운 한국어 요약")
-print()
-print("📁 GitHub에 업로드할 파일들:")
-print("1. requirements.txt")
-print("2. .github/workflows/news-summary.yml") 
-print("3. news_automation.py")
