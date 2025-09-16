@@ -74,6 +74,12 @@ KEYWORD_EMOJIS = {
     'AI': '🤖'
 }
 
+# 🆕 메시지 그룹 설정 (2개 메시지로 분할)
+MESSAGE_GROUPS = {
+    '1차': ['군대', '정치'],    # 첫 번째 메시지: 군대 + 정치
+    '2차': ['주식', 'AI']        # 두 번째 메시지: 주식 + AI
+}
+
 def clean_text(text):
     """HTML 태그 제거 및 텍스트 정리"""
     if not text:
@@ -306,11 +312,17 @@ async def generate_news_audio(text_content):
         print(f"  ❌ 음성 변환 실패: {str(e)}")
         return None
 
-def send_kakao_message_with_audio_info(text_message, audio_file_path=None):
-    """카카오톡 나에게 메시지 전송 (음성 파일 정보 포함)"""
-    print("📱 카카오톡 메시지 전송 중...")
+def send_kakao_message_with_audio_info(text_message, audio_file_path=None, message_type="나에게"):
+    """카카오톡 메시지 전송 (나에게 보내기 + 친구에게 보내기 옵션)"""
+    print(f"📱 카카오톡 {message_type} 메시지 전송 중...")
     
-    url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+    # 🆕 나에게 보내기 vs 친구에게 보내기 URL 구분
+    if message_type == "나에게":
+        url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+    else:
+        # 친구에게 보내기 (추후 구현 가능)
+        url = "https://kapi.kakao.com/v1/api/talk/friends/message/default/send"
+        
     headers = {
         "Authorization": f"Bearer {KAKAO_ACCESS_TOKEN}",
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
@@ -328,7 +340,7 @@ def send_kakao_message_with_audio_info(text_message, audio_file_path=None):
     if len(enhanced_message) > 1000:
         enhanced_message = enhanced_message[:1000] + "\n\n💬 전체 내용이 길어 일부만 표시됩니다"
     
-    # 텍스트 메시지 구성 - 링크를 실제 뉴스 포털로 변경
+    # 텍스트 메시지 구성
     template_object = {
         "object_type": "text",
         "text": enhanced_message,
@@ -342,13 +354,17 @@ def send_kakao_message_with_audio_info(text_message, audio_file_path=None):
         "template_object": json.dumps(template_object, ensure_ascii=False)
     }
     
+    # 🆕 친구에게 보내기의 경우 추가 파라미터 필요 (현재는 주석 처리)
+    # if message_type != "나에게":
+    #     data["receiver_uuids"] = json.dumps(["친구_UUID"])  # 실제 친구 UUID 필요
+    
     try:
         response = requests.post(url, headers=headers, data=data, timeout=10)
         
         if response.status_code == 200:
             result = response.json()
             if result.get('result_code') == 0:
-                print("  ✅ 카카오톡 메시지 전송 성공!")
+                print(f"  ✅ 카카오톡 {message_type} 메시지 전송 성공!")
                 return True
             else:
                 print(f"  ❌ 카카오 API 오류: {result.get('msg', 'Unknown error')}")
@@ -364,19 +380,15 @@ def send_kakao_message_with_audio_info(text_message, audio_file_path=None):
         print(f"  ❌ 메시지 전송 실패: {str(e)}")
         return False
 
-async def main():
-    """메인 실행 함수"""
-    start_time = datetime.now()
-    print("🚀 뉴스 요약 봇 시작")
-    print(f"⏰ 실행 시간: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🔍 대상 키워드: {', '.join(KEYWORD_FEEDS.keys())}")
+async def process_keyword_group(group_name, keywords, today, weekday):
+    """키워드 그룹별 처리 및 메시지 생성"""
+    print(f"\n🎯 [{group_name}] 그룹 처리 시작: {', '.join(keywords)}")
     
-    # 전체 요약 저장
-    all_summaries = []
-    success_count = 0
+    group_summaries = []
+    group_success_count = 0
     
-    # 키워드별 뉴스 수집 및 요약
-    for keyword in KEYWORD_FEEDS.keys():
+    # 해당 그룹의 키워드들 처리
+    for keyword in keywords:
         try:
             print(f"\n{'='*60}")
             print(f"🎯 [{keyword}] 처리 시작")
@@ -386,8 +398,8 @@ async def main():
             
             # AI 요약 (개조식)
             summary = summarize_news_with_gemini(keyword, articles)
-            all_summaries.append(summary)
-            success_count += 1
+            group_summaries.append(summary)
+            group_success_count += 1
             
             print(f"✅ [{keyword}] 처리 완료")
             
@@ -397,62 +409,95 @@ async def main():
         except Exception as e:
             emoji = KEYWORD_EMOJIS.get(keyword, '📰')
             error_summary = f"{emoji} {keyword}\n• 처리 중 오류가 발생했습니다: {str(e)}"
-            all_summaries.append(error_summary)
+            group_summaries.append(error_summary)
             print(f"❌ [{keyword}] 처리 실패: {str(e)}")
     
-    # 전체 메시지 구성 (개선된 형태)
+    # 그룹별 메시지 구성
+    if group_name == '1차':
+        header = f"📰 {today.strftime('%m/%d')} {weekday} 뉴스요약 [1/2]"
+        footer_prefix = "🔸 1차 브리핑 완료"
+    else:
+        header = f"📈 {today.strftime('%m/%d')} {weekday} 뉴스요약 [2/2]"
+        footer_prefix = "🔹 2차 브리핑 완료"
+    
+    # 구분선과 함께 깔끔하게 구성
+    group_message = f"{header}\n{'─'*30}\n\n"
+    group_message += "\n\n".join(group_summaries)
+    
+    # 실행 정보 추가 (간소화)
+    end_time = datetime.now()
+    
+    footer = f"\n\n{'─'*30}"
+    footer += f"\n{footer_prefix} ({group_success_count}/{len(keywords)}개)"
+    footer += f" | 🕐 {end_time.strftime('%H:%M')}"
+    
+    group_message += footer
+    
+    return group_message, group_success_count
+
+async def main():
+    """메인 실행 함수 - 2개 메시지로 분할 전송"""
+    start_time = datetime.now()
+    print("🚀 뉴스 요약 봇 시작 (2개 메시지 분할 전송)")
+    print(f"⏰ 실행 시간: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"🔍 메시지 그룹: {MESSAGE_GROUPS}")
+    
+    # 날짜 정보 준비
     today = datetime.now()
     weekday_names = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
     weekday = weekday_names[today.weekday()]
     
-    header = f"📰 {today.strftime('%m/%d')} {weekday} 뉴스요약"
+    total_success_count = 0
+    total_keywords = sum(len(keywords) for keywords in MESSAGE_GROUPS.values())
     
-    # 구분선과 함께 깔끔하게 구성
-    full_message = f"{header}\n{'─'*30}\n\n"
-    full_message += "\n\n".join(all_summaries)
+    # 각 그룹별로 순차 처리 및 전송
+    for group_name, keywords in MESSAGE_GROUPS.items():
+        try:
+            # 🎯 그룹별 뉴스 처리
+            group_message, group_success_count = await process_keyword_group(
+                group_name, keywords, today, weekday
+            )
+            
+            total_success_count += group_success_count
+            
+            print(f"\n📝 [{group_name}] 그룹 메시지 생성 완료")
+            print(f"📊 길이: {len(group_message)}자")
+            
+            # 🎵 음성 파일 생성 (그룹별)
+            audio_file = await generate_news_audio(group_message)
+            
+            # 📱 카카오톡 전송 (나에게 보내기)
+            success = send_kakao_message_with_audio_info(group_message, audio_file, "나에게")
+            
+            if success:
+                print(f"✅ [{group_name}] 그룹 메시지 전송 성공!")
+            else:
+                print(f"❌ [{group_name}] 그룹 메시지 전송 실패")
+            
+            # 🗑️ 임시 파일 정리
+            if audio_file and os.path.exists(audio_file):
+                try:
+                    os.unlink(audio_file)
+                except Exception as e:
+                    print(f"⚠️ 임시 파일 삭제 실패: {e}")
+            
+            # 메시지 간 간격 (카카오톡 API 부하 방지)
+            if group_name != list(MESSAGE_GROUPS.keys())[-1]:  # 마지막 그룹이 아니면
+                print("⏳ 다음 메시지 전송까지 5초 대기...")
+                time.sleep(5)
+                
+        except Exception as e:
+            print(f"❌ [{group_name}] 그룹 처리 중 오류 발생: {str(e)}")
     
-    # 실행 정보 추가 (간소화)
+    # 최종 결과 요약
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
     
-    footer = f"\n\n{'─'*30}"
-    footer += f"\n📊 {success_count}/{len(KEYWORD_FEEDS)}개 완료"
-    footer += f" | ⏱️ {duration:.0f}초"
-    footer += f" | 🕐 {end_time.strftime('%H:%M')}"
-    
-    full_message += footer
-    
     print(f"\n{'='*60}")
-    print("📝 최종 요약 생성 완료")
-    print(f"📊 총 길이: {len(full_message)}자")
+    print("🎉 뉴스 요약 봇 실행 완료!")
+    print(f"📊 총 처리 결과: {total_success_count}/{total_keywords}개 키워드 완료")
+    print(f"📱 총 {len(MESSAGE_GROUPS)}개 메시지 전송 완료")
     print(f"⏱️ 총 처리 시간: {duration:.1f}초")
-    
-    # 🎵 음성 파일 생성
-    audio_file = await generate_news_audio(full_message)
-    
-    # 📱 카카오톡 전송 (음성 정보 포함)
-    success = send_kakao_message_with_audio_info(full_message, audio_file)
-    
-    # 🗑️ 임시 파일 정리
-    if audio_file and os.path.exists(audio_file):
-        try:
-            print(f"🗂️ 임시 음성 파일 정리: {audio_file}")
-            os.unlink(audio_file)
-        except Exception as e:
-            print(f"⚠️ 임시 파일 삭제 실패: {e}")
-    
-    # 최종 결과
-    if success:
-        print("\n🎉 뉴스 요약 봇 실행 완료!")
-        print("📱 카카오톡으로 요약이 전송되었습니다.")
-        if audio_file:
-            print("🔊 음성 파일도 생성되었습니다. (텍스트 메시지로 알림)")
-    else:
-        print("\n⚠️ 메시지 전송은 실패했지만, 요약 생성은 완료되었습니다.")
-    
-    print(f"\n📋 요약 미리보기:")
-    print("-" * 50)
-    print(full_message[:500] + "..." if len(full_message) > 500 else full_message)
 
 if __name__ == "__main__":
     try:
