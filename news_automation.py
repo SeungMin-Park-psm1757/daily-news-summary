@@ -16,6 +16,7 @@ import time
 from email.utils import parsedate_tz, mktime_tz
 import re
 from bs4 import BeautifulSoup
+import base64
 
 # 환경 변수 확인
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
@@ -265,33 +266,48 @@ def summarize_news_with_gemini(keyword, articles):
         emoji = KEYWORD_EMOJIS.get(keyword, '📰')
         return f"{emoji} {keyword}\n• AI 요약 생성 중 오류가 발생했습니다."
 
-async def text_to_speech(text, output_file):
-    """Edge TTS로 텍스트를 음성으로 변환 (선택적)"""
+async def generate_news_audio(text_content):
+    """뉴스 요약을 음성으로 변환 및 저장"""
     try:
-        print("🔊 음성 변환 시도 중...")
+        print("🔊 뉴스 요약 음성 변환 중...")
         
-        # 텍스트 길이 제한 (TTS는 너무 긴 텍스트에 부담)
-        if len(text) > 3000:
-            text = text[:3000] + "..."
+        # TTS용 텍스트 정리 (이모티콘 제거, 개조식 기호 정리)
+        clean_content = text_content
+        clean_content = re.sub(r'[🪖🏛️📈🤖📰🌍🇰🇷]', '', clean_content)  # 이모티콘 제거
+        clean_content = re.sub(r'[─]+', '', clean_content)  # 구분선 제거
+        clean_content = re.sub(r'•', '', clean_content)  # 불릿 기호 제거
+        clean_content = re.sub(r'\s+', ' ', clean_content).strip()  # 공백 정리
         
-        # 한국어 음성 설정
+        # 길이 제한 (너무 긴 텍스트는 TTS에 부담)
+        if len(clean_content) > 2000:
+            clean_content = clean_content[:2000] + " 이상으로 요약을 마치겠습니다."
+        
+        # 임시 파일 생성
+        audio_file = tempfile.mktemp(suffix='.wav')
+        
+        # 한국어 TTS 설정
         communicate = edge_tts.Communicate(
-            text=text,
-            voice="ko-KR-SunHiNeural",
-            rate="+10%",
+            text=clean_content,
+            voice="ko-KR-SunHiNeural",  # 자연스러운 한국어 음성
+            rate="+15%",  # 약간 빠르게
             volume="+0%"
         )
         
-        await communicate.save(output_file)
-        print(f"  ✅ 음성 파일 생성 성공")
-        return True
+        # 음성 파일 생성
+        await communicate.save(audio_file)
+        
+        # 파일 크기 확인
+        file_size = os.path.getsize(audio_file)
+        print(f"  ✅ 음성 파일 생성 완료: {file_size/1024:.1f}KB")
+        
+        return audio_file
         
     except Exception as e:
-        print(f"  ⚠️ 음성 변환 실패 (계속 진행): {str(e)}")
-        return False
+        print(f"  ❌ 음성 변환 실패: {str(e)}")
+        return None
 
-def send_kakao_message(text_message):
-    """카카오톡 나에게 메시지 전송"""
+def send_kakao_message_with_audio_info(text_message, audio_file_path=None):
+    """카카오톡 나에게 메시지 전송 (음성 파일 정보 포함)"""
     print("📱 카카오톡 메시지 전송 중...")
     
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
@@ -300,17 +316,25 @@ def send_kakao_message(text_message):
         "Content-Type": "application/x-www-form-urlencoded; charset=utf-8"
     }
     
-    # 메시지 길이 제한 (카카오톡 제한 고려)
-    if len(text_message) > 1000:
-        text_message = text_message[:1000] + "\n\n💬 전체 내용이 길어 일부만 표시됩니다"
+    # 음성 파일 정보를 메시지에 추가
+    enhanced_message = text_message
     
-    # 텍스트 메시지 구성
+    if audio_file_path and os.path.exists(audio_file_path):
+        file_size = os.path.getsize(audio_file_path) / 1024  # KB 단위
+        enhanced_message += f"\n\n🔊 음성 요약 파일 생성됨 ({file_size:.1f}KB)"
+        enhanced_message += "\n📝 현재는 텍스트로만 전송됩니다"
+    
+    # 메시지 길이 제한 (카카오톡 제한 고려)
+    if len(enhanced_message) > 1000:
+        enhanced_message = enhanced_message[:1000] + "\n\n💬 전체 내용이 길어 일부만 표시됩니다"
+    
+    # 텍스트 메시지 구성 - 링크를 실제 뉴스 포털로 변경
     template_object = {
         "object_type": "text",
-        "text": text_message,
+        "text": enhanced_message,
         "link": {
-            "web_url": "https://news.naver.com",
-            "mobile_web_url": "https://news.naver.com"
+            "web_url": "https://news.naver.com/main/main.naver?mode=LSD&mid=shm&sid1=001",
+            "mobile_web_url": "https://m.news.naver.com/main/main.naver"
         }
     }
     
@@ -403,28 +427,26 @@ async def main():
     print(f"📊 총 길이: {len(full_message)}자")
     print(f"⏱️ 총 처리 시간: {duration:.1f}초")
     
-    # 음성 변환 시도 (선택적)
-    audio_file = None
-    try:
-        audio_file = tempfile.mktemp(suffix='.wav')
-        await text_to_speech(full_message[:1000], audio_file)  # 길이 제한
-    except Exception as e:
-        print(f"⚠️ 음성 변환 건너뛰기: {str(e)}")
+    # 🎵 음성 파일 생성
+    audio_file = await generate_news_audio(full_message)
     
-    # 카카오톡 전송
-    success = send_kakao_message(full_message)
+    # 📱 카카오톡 전송 (음성 정보 포함)
+    success = send_kakao_message_with_audio_info(full_message, audio_file)
     
-    # 임시 파일 정리
+    # 🗑️ 임시 파일 정리
     if audio_file and os.path.exists(audio_file):
         try:
+            print(f"🗂️ 임시 음성 파일 정리: {audio_file}")
             os.unlink(audio_file)
-        except:
-            pass
+        except Exception as e:
+            print(f"⚠️ 임시 파일 삭제 실패: {e}")
     
     # 최종 결과
     if success:
         print("\n🎉 뉴스 요약 봇 실행 완료!")
         print("📱 카카오톡으로 요약이 전송되었습니다.")
+        if audio_file:
+            print("🔊 음성 파일도 생성되었습니다. (텍스트 메시지로 알림)")
     else:
         print("\n⚠️ 메시지 전송은 실패했지만, 요약 생성은 완료되었습니다.")
     
