@@ -258,43 +258,111 @@ def summarize_news_with_gemini(keyword, articles):
         emoji = KEYWORD_EMOJIS.get(keyword, '📰')
         return f"{emoji} {keyword}\n• AI 요약 생성 중 오류가 발생했습니다."
 
+def prepare_tts_text_with_pauses(text_content):
+    """TTS용 텍스트 준비 - SSML로 간격 추가"""
+    
+    # 1. 기본 정리 (이모티콘 제거 등)
+    clean_content = text_content
+    clean_content = re.sub(r'[🪖🏛️📈🤖📰🌍🇰🇷]', '', clean_content)  # 이모티콘 제거
+    clean_content = re.sub(r'[─]+', '', clean_content)  # 구분선 제거
+    clean_content = re.sub(r'•', '', clean_content)  # 불릿 기호 제거
+    clean_content = re.sub(r'\s+', ' ', clean_content).strip()  # 공백 정리
+    
+    # 2. 길이 제한
+    if len(clean_content) > 3000:
+        clean_content = clean_content[:3000] + "이상으로 오늘의 뉴스 요약을 마치겠습니다."
+    
+    # 3. 텍스트를 줄 단위로 분할하여 SSML로 변환
+    lines = clean_content.split('\n')
+    
+    # 4. SSML 형식으로 변환 - 각 줄 사이에 0.5초 간격
+    ssml_content = '<speak>'
+    
+    for i, line in enumerate(lines):
+        line = line.strip()
+        if not line:  # 빈 줄은 건너뛰기
+            continue
+            
+        # 각 줄을 추가
+        ssml_content += f'{line}'
+        
+        # 마지막 줄이 아니면 0.5초 간격 추가
+        if i < len(lines) - 1 and line:
+            ssml_content += '<break time="0.5s"/>'
+    
+    ssml_content += '</speak>'
+    
+    # 5. 특수 케이스 처리
+    ssml_content = ssml_content.replace('|', '<break time="0.3s"/>')  # 구분자를 짧은 간격으로
+    ssml_content = ssml_content.replace('완료', '완료<break time="0.7s"/>')  # 완료 후 긴 간격
+    
+    # 6. 시작 멘트 추가
+    final_ssml = '<speak>오늘의 주요 뉴스를 요약해드리겠습니다.<break time="1s"/>' + ssml_content[7:]  # <speak> 중복 제거
+    
+    return final_ssml
+
 async def generate_news_audio(text_content, output_path=None):
-    """뉴스 요약을 음성으로 변환"""
+    """뉴스 요약을 음성으로 변환 - SSML로 간격 제어"""
     try:
-        print("🔊 뉴스 요약 음성 변환 중...")
+        print("🔊 뉴스 요약 음성 변환 중 (SSML 간격 포함)...")
         
-        clean_content = text_content
-        clean_content = re.sub(r'[🪖🏛️📈🤖📰🌍🇰🇷]', '', clean_content)
-        clean_content = re.sub(r'[─]+', '', clean_content)
-        clean_content = re.sub(r'•', '', clean_content)
-        clean_content = re.sub(r'\s+', ' ', clean_content).strip()
+        # SSML 형식으로 텍스트 준비
+        ssml_content = prepare_tts_text_with_pauses(text_content)
         
-        if len(clean_content) > 3000:
-            clean_content = clean_content[:3000] + "이상으로 오늘의 뉴스 요약을 마치겠습니다."
-        
-        clean_content = clean_content.replace('|', '.')
-        clean_content = "오늘의 주요 뉴스를 요약해드리겠습니다. " + clean_content
-        
+        # 임시 파일 생성
         if not output_path:
             output_path = tempfile.mktemp(suffix='.ogg')
         
+        # 한국어 TTS 설정 (SSML 지원)
         communicate = edge_tts.Communicate(
-            text=clean_content,
+            text=ssml_content,
             voice="ko-KR-SunHiNeural",
             rate="+10%",
             volume="+0%"
         )
         
+        # 음성 파일 생성
         await communicate.save(output_path)
         
+        # 파일 크기 확인
         file_size = os.path.getsize(output_path)
-        print(f"  ✅ 음성 파일 생성 완료: {file_size/1024:.1f}KB")
+        print(f"  ✅ 음성 파일 생성 완료: {file_size/1024:.1f}KB (SSML 간격 적용)")
         
         return output_path
         
     except Exception as e:
         print(f"  ❌ 음성 변환 실패: {str(e)}")
-        return None
+        # SSML 실패 시 일반 텍스트로 폴백
+        try:
+            print("  🔄 일반 텍스트로 재시도 중...")
+            
+            clean_content = text_content
+            clean_content = re.sub(r'[🪖🏛️📈🤖📰🌍🇰🇷]', '', clean_content)
+            clean_content = re.sub(r'[─]+', '', clean_content)
+            clean_content = re.sub(r'•', '', clean_content)
+            clean_content = re.sub(r'\s+', ' ', clean_content).strip()
+            
+            if len(clean_content) > 3000:
+                clean_content = clean_content[:3000] + "이상으로 오늘의 뉴스 요약을 마치겠습니다."
+            
+            clean_content = "오늘의 주요 뉴스를 요약해드리겠습니다. " + clean_content
+            
+            communicate = edge_tts.Communicate(
+                text=clean_content,
+                voice="ko-KR-SunHiNeural",
+                rate="+10%",
+                volume="+0%"
+            )
+            
+            await communicate.save(output_path)
+            file_size = os.path.getsize(output_path)
+            print(f"  ✅ 일반 음성 파일 생성 완료: {file_size/1024:.1f}KB")
+            
+            return output_path
+            
+        except Exception as fallback_error:
+            print(f"  ❌ 폴백 음성 변환도 실패: {str(fallback_error)}")
+            return None
 
 async def send_telegram_message(text, parse_mode='HTML'):
     """텔레그램 텍스트 메시지 전송"""
@@ -360,7 +428,7 @@ async def send_telegram_voice(voice_file_path, caption=""):
 async def main():
     """메인 실행 함수 - 텔레그램 단일 메시지 + 음성 전송"""
     start_time = datetime.now()
-    print("🚀 텔레그램 뉴스 요약 봇 시작 (텍스트 + 음성)")
+    print("🚀 텔레그램 뉴스 요약 봇 시작 (텍스트 + SSML 간격 음성)")
     print(f"⏰ 실행 시간: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"🤖 텔레그램 봇: @{TELEGRAM_BOT_TOKEN.split(':')[0]}")
     print(f"📢 채팅 ID: {TELEGRAM_CHAT_ID}")
@@ -412,13 +480,14 @@ async def main():
     print(f"📊 총 길이: {len(full_message)}자")
     print(f"⏱️ 총 처리 시간: {duration:.1f}초")
     
+    # 🎵 SSML 간격 적용된 음성 파일 생성
     audio_file = await generate_news_audio(full_message)
     
     text_success = await send_telegram_message(full_message)
     voice_success = False
     
     if audio_file and os.path.exists(audio_file):
-        voice_caption = f"🔊 {today.strftime('%m/%d')} {weekday} 뉴스 요약 음성"
+        voice_caption = f"🔊 {today.strftime('%m/%d')} {weekday} 뉴스 요약 음성 (간격 적용)"
         voice_success = await send_telegram_voice(audio_file, voice_caption)
         
         try:
@@ -433,7 +502,7 @@ async def main():
         print("❌ 텍스트 메시지 전송 실패")
         
     if voice_success:
-        print("🔊 음성 메시지 전송 성공!")
+        print("🔊 음성 메시지 전송 성공! (SSML 간격 적용)")
     else:
         print("❌ 음성 메시지 전송 실패")
     
