@@ -33,7 +33,7 @@ if not KAKAO_ACCESS_TOKEN:
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
 
-# 키워드별 RSS 피드 설정 (안정적인 URL들로 업데이트)
+# 키워드별 RSS 피드 설정 및 이모티콘 매핑
 KEYWORD_FEEDS = {
     '군대': [
         'https://www.yna.co.kr/rss/northkorea.xml',  # 연합뉴스 북한
@@ -63,6 +63,14 @@ KEYWORD_FEEDS = {
         'https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml',  # 해외
         'http://feeds.bbci.co.uk/news/technology/rss.xml'  # 해외
     ]
+}
+
+# 키워드별 이모티콘 매핑
+KEYWORD_EMOJIS = {
+    '군대': '🪖',
+    '정치': '🏛️', 
+    '주식': '📈',
+    'AI': '🤖'
 }
 
 def clean_text(text):
@@ -175,39 +183,45 @@ def collect_news_by_keyword(keyword, max_domestic=5, max_international=2):
     return all_articles
 
 def summarize_news_with_gemini(keyword, articles):
-    """Gemini API로 뉴스 요약"""
+    """Gemini API로 뉴스 요약 (개조식 형태)"""
     if not articles:
-        return f"[{keyword}] 오늘은 관련된 주요 뉴스가 확인되지 않았다."
+        emoji = KEYWORD_EMOJIS.get(keyword, '📰')
+        return f"{emoji} {keyword}\n• 오늘은 관련 주요 뉴스가 없었습니다."
     
     print(f"🤖 [{keyword}] AI 요약 생성 중...")
     
     # 기사 내용 정리
     articles_text = ""
     for i, article in enumerate(articles, 1):
-        source_type = "해외" if article['source'] == 'international' else "국내"
+        source_type = "🌍해외" if article['source'] == 'international' else "🇰🇷국내"
         articles_text += f"\n[{source_type} 기사 {i}]\n제목: {article['title']}\n내용: {article['summary'][:300]}\n"
     
-    # Gemini 프롬프트
-    prompt = f"""다음은 '{keyword}' 관련 오늘의 주요 뉴스들입니다. 이를 바탕으로 핵심 내용을 한국어로 요약해주세요.
+    # 개선된 Gemini 프롬프트 (개조식)
+    prompt = f"""다음은 '{keyword}' 관련 오늘의 주요 뉴스들입니다. 읽기 쉬운 개조식으로 요약해주세요.
 
 {articles_text}
 
-요약 규칙:
-1. 5-10개 문장으로 요약
-2. 모든 문장은 "~했다", "~됐다", "~나타났다", "~밝혔다" 등 과거형으로 종료
-3. 핵심 사실과 구체적 수치 포함
-4. 국내외 소식을 균형있게 반영
-5. 객관적이고 간결한 어조 유지
+요약 형식:
+1. 각 주요 내용을 개조식(• 문장)으로 작성
+2. 최대 5개 항목으로 제한  
+3. 각 항목은 한 줄로 간결하게
+4. 구체적 수치나 핵심 키워드 포함
+5. "~했다", "~됐다" 등 과거형 사용
 6. 중요도 순으로 배열
 
-요약:"""
+예시 형식:
+• 첫 번째 핵심 내용이다
+• 두 번째 중요한 소식이다
+• 세 번째 주요 사건이다
+
+요약 (개조식):"""
 
     try:
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
                 temperature=0.3,
-                max_output_tokens=2000,
+                max_output_tokens=1500,
                 top_p=0.8,
                 top_k=40
             )
@@ -216,20 +230,40 @@ def summarize_news_with_gemini(keyword, articles):
         summary = response.text.strip()
         
         if not summary:
-            return f"[{keyword}] 요약 생성에 실패했다."
+            emoji = KEYWORD_EMOJIS.get(keyword, '📰')
+            return f"{emoji} {keyword}\n• 요약 생성에 실패했습니다."
         
-        # 문장 단위로 분리하여 검증
-        sentences = [s.strip() for s in summary.split('.') if s.strip()]
-        if len(sentences) < 3:
-            return f"[{keyword}] 충분한 요약 내용을 생성하지 못했다."
+        # 개조식 포맷 검증 및 정리
+        lines = [line.strip() for line in summary.split('\n') if line.strip()]
+        bullet_points = []
+        
+        for line in lines:
+            if line.startswith('•') or line.startswith('-') or line.startswith('*'):
+                bullet_points.append(line if line.startswith('•') else f"• {line[1:].strip()}")
+            elif not any(line.startswith(prefix) for prefix in ['요약', '형식', '예시']):
+                # 개조식 기호가 없으면 추가
+                bullet_points.append(f"• {line}")
+        
+        # 최대 5개 항목으로 제한
+        if len(bullet_points) > 5:
+            bullet_points = bullet_points[:5]
+        
+        if not bullet_points:
+            emoji = KEYWORD_EMOJIS.get(keyword, '📰')
+            return f"{emoji} {keyword}\n• 충분한 요약 내용을 생성하지 못했습니다."
             
-        print(f"  ✅ [{keyword}] 요약 완료 ({len(summary)}자, {len(sentences)}문장)")
+        print(f"  ✅ [{keyword}] 요약 완료 ({len(bullet_points)}개 항목)")
         
-        return f"[{keyword}]\n{summary}"
+        # 이모티콘과 함께 포맷팅
+        emoji = KEYWORD_EMOJIS.get(keyword, '📰')
+        formatted_summary = f"{emoji} {keyword}\n" + "\n".join(bullet_points)
+        
+        return formatted_summary
         
     except Exception as e:
         print(f"  ❌ [{keyword}] 요약 실패: {str(e)}")
-        return f"[{keyword}] AI 요약 생성 중 오류가 발생했다."
+        emoji = KEYWORD_EMOJIS.get(keyword, '📰')
+        return f"{emoji} {keyword}\n• AI 요약 생성 중 오류가 발생했습니다."
 
 async def text_to_speech(text, output_file):
     """Edge TTS로 텍스트를 음성으로 변환 (선택적)"""
@@ -268,7 +302,7 @@ def send_kakao_message(text_message):
     
     # 메시지 길이 제한 (카카오톡 제한 고려)
     if len(text_message) > 1000:
-        text_message = text_message[:1000] + "\n\n(전체 내용이 길어 일부만 표시됩니다)"
+        text_message = text_message[:1000] + "\n\n💬 전체 내용이 길어 일부만 표시됩니다"
     
     # 텍스트 메시지 구성
     template_object = {
@@ -326,12 +360,8 @@ async def main():
             # 뉴스 수집
             articles = collect_news_by_keyword(keyword, max_domestic=5, max_international=2)
             
-            if not articles:
-                summary = f"[{keyword}] 오늘은 관련된 최신 뉴스를 찾을 수 없었다."
-            else:
-                # AI 요약
-                summary = summarize_news_with_gemini(keyword, articles)
-            
+            # AI 요약 (개조식)
+            summary = summarize_news_with_gemini(keyword, articles)
             all_summaries.append(summary)
             success_count += 1
             
@@ -341,23 +371,30 @@ async def main():
             time.sleep(2)
             
         except Exception as e:
-            error_summary = f"[{keyword}] 처리 중 오류가 발생했다: {str(e)}"
+            emoji = KEYWORD_EMOJIS.get(keyword, '📰')
+            error_summary = f"{emoji} {keyword}\n• 처리 중 오류가 발생했습니다: {str(e)}"
             all_summaries.append(error_summary)
             print(f"❌ [{keyword}] 처리 실패: {str(e)}")
     
-    # 전체 메시지 구성
-    today = datetime.now().strftime('%Y년 %m월 %d일 %A')
-    header = f"📰 {today} 주요 뉴스 요약"
+    # 전체 메시지 구성 (개선된 형태)
+    today = datetime.now()
+    weekday_names = ['월요일', '화요일', '수요일', '목요일', '금요일', '토요일', '일요일']
+    weekday = weekday_names[today.weekday()]
     
-    full_message = header + "\n" + "="*50 + "\n\n"
+    header = f"📰 {today.strftime('%m/%d')} {weekday} 뉴스요약"
+    
+    # 구분선과 함께 깔끔하게 구성
+    full_message = f"{header}\n{'─'*30}\n\n"
     full_message += "\n\n".join(all_summaries)
     
-    # 실행 정보 추가
+    # 실행 정보 추가 (간소화)
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
-    footer = f"\n\n📊 처리 결과: {success_count}/{len(KEYWORD_FEEDS)}개 키워드 완료"
-    footer += f"\n⏱️ 처리 시간: {duration:.1f}초"
-    footer += f"\n🕐 생성 시간: {end_time.strftime('%H:%M')}"
+    
+    footer = f"\n\n{'─'*30}"
+    footer += f"\n📊 {success_count}/{len(KEYWORD_FEEDS)}개 완료"
+    footer += f" | ⏱️ {duration:.0f}초"
+    footer += f" | 🕐 {end_time.strftime('%H:%M')}"
     
     full_message += footer
     
