@@ -46,29 +46,29 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 KEYWORD_FEEDS = {
     '군대': [
         'https://www.yna.co.kr/rss/northkorea.xml',
-        'http://newssearch.naver.com/search.naver?where=rss&query=군대&sort=date',
-        'http://newssearch.naver.com/search.naver?where=rss&query=육군&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=군대&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=육군&sort=date',
         'https://rss.nytimes.com/services/xml/rss/nyt/World.xml',
         'http://feeds.bbci.co.uk/news/world/rss.xml'
     ],
     '정치': [
         'https://www.yna.co.kr/rss/politics.xml',
-        'http://newssearch.naver.com/search.naver?where=rss&query=정치&sort=date',
-        'http://newssearch.naver.com/search.naver?where=rss&query=국정감사&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=정치&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=국정감사&sort=date',
         'https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml',
         'http://feeds.bbci.co.uk/news/politics/rss.xml'
     ],
     '주식': [
         'https://www.yna.co.kr/rss/economy.xml',
-        'http://newssearch.naver.com/search.naver?where=rss&query=코스피&sort=date',
-        'http://newssearch.naver.com/search.naver?where=rss&query=삼성전자&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=코스피&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=삼성전자&sort=date',
         'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml',
         'http://feeds.bbci.co.uk/news/business/rss.xml'
     ],
     'AI': [
-        'http://newssearch.naver.com/search.naver?where=rss&query=인공지능&sort=date',
-        'http://newssearch.naver.com/search.naver?where=rss&query=AI&sort=date',
-        'http://newssearch.naver.com/search.naver?where=rss&query=ChatGPT&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=인공지능&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=AI&sort=date',
+        'https://newssearch.naver.com/search.naver?where=rss&query=ChatGPT&sort=date',
         'https://rss.nytimes.com/services/xml/rss/nyt/Technology.xml',
         'http://feeds.bbci.co.uk/news/technology/rss.xml'
     ]
