@@ -15,6 +15,7 @@ import tempfile
 import time
 from email.utils import parsedate_tz, mktime_tz
 import re
+import html
 from bs4 import BeautifulSoup
 import aiohttp
 
@@ -110,115 +111,115 @@ def is_recent_article(published_date, hours=24):
         print(f"    ⚠️ 날짜 파싱 오류: {e}")
         return True
 
-def collect_news_by_keyword(keyword, max_domestic=5, max_international=2):
-    """키워드별 뉴스 수집"""
+async def fetch_feed(session, feed_url):
+    """비동기적으로 RSS 피드를 가져오고 파싱"""
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    try:
+        async with session.get(feed_url, headers=headers, timeout=10) as response:
+            if response.status == 200:
+                content = await response.text()
+                return feedparser.parse(content)
+            else:
+                print(f"    ⚠️ HTTP {response.status} - 피드 가져오기 실패: {feed_url}")
+                return None
+    except Exception as e:
+        print(f"    ❌ 피드 처리 중 예외 발생: {feed_url} ({e})")
+        return None
+
+async def collect_news_by_keyword(keyword, max_domestic=5, max_international=2):
+    """키워드별 뉴스 비동기 수집"""
     print(f"\n📰 [{keyword}] 뉴스 수집 중...")
     
+    feeds = KEYWORD_FEEDS.get(keyword, [])
     domestic_articles = []
     international_articles = []
-    feeds = KEYWORD_FEEDS.get(keyword, [])
-    
-    for i, feed_url in enumerate(feeds):
-        try:
-            print(f"  피드 {i+1}/{len(feeds)} 처리 중...")
-            
-            is_international = any(domain in feed_url for domain in ['nytimes.com', 'bbci.co.uk'])
-            
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            
-            feed = feedparser.parse(feed_url, request_headers=headers)
-            
-            if feed.bozo and feed.bozo_exception:
-                print(f"    ⚠️ RSS 파싱 경고: {feed_url}")
+
+    async with aiohttp.ClientSession() as session:
+        tasks = [fetch_feed(session, url) for url in feeds]
+        feed_results = await asyncio.gather(*tasks)
+
+    for feed_url, feed in zip(feeds, feed_results):
+        if not feed or (feed.bozo and feed.bozo_exception):
+            if feed and feed.bozo_exception:
+                print(f"    ⚠️ RSS 파싱 경고: {feed_url} - {feed.bozo_exception}")
+            continue
+
+        is_international = any(domain in feed_url for domain in ['nytimes.com', 'bbci.co.uk'])
+        
+        for entry in feed.entries[:10]:
+            if not is_recent_article(entry.get('published')):
                 continue
             
-            for entry in feed.entries[:10]:
-                try:
-                    if not is_recent_article(entry.get('published')):
-                        continue
-                    
-                    title = clean_text(entry.get('title', ''))
-                    summary = clean_text(entry.get('summary', entry.get('description', '')))
-                    
-                    if not title or len(title) < 10:
-                        continue
-                    
-                    article = {
-                        'title': title[:100],
-                        'link': entry.get('link', ''),
-                        'summary': summary,
-                        'published': entry.get('published', ''),
-                        'source': 'international' if is_international else 'domestic'
-                    }
-                    
-                    if is_international:
-                        if len(international_articles) < max_international:
-                            international_articles.append(article)
-                    else:
-                        if len(domestic_articles) < max_domestic:
-                            domestic_articles.append(article)
-                    
-                    if len(domestic_articles) >= max_domestic and len(international_articles) >= max_international:
-                        break
-                        
-                except Exception as e:
-                    print(f"    ⚠️ 기사 처리 오류: {e}")
-                    continue
-            
-            print(f"    ✅ 수집됨 - 국내: {len(domestic_articles)}, 해외: {len(international_articles)}")
-            
-        except Exception as e:
-            print(f"    ❌ 피드 처리 실패: {e}")
-            continue
-            
+            title = clean_text(entry.get('title', ''))
+            if not title or len(title) < 10:
+                continue
+
+            summary = clean_text(entry.get('summary', entry.get('description', '')))
+            article = {
+                'title': title[:100],
+                'link': entry.get('link', ''),
+                'summary': summary,
+                'published': entry.get('published', ''),
+                'source': 'international' if is_international else 'domestic'
+            }
+
+            if is_international and len(international_articles) < max_international:
+                international_articles.append(article)
+            elif not is_international and len(domestic_articles) < max_domestic:
+                domestic_articles.append(article)
+
+            if len(domestic_articles) >= max_domestic and len(international_articles) >= max_international:
+                break
         if len(domestic_articles) >= max_domestic and len(international_articles) >= max_international:
             break
     
-    all_articles = domestic_articles + international_articles
-    print(f"  ✅ [{keyword}] 총 {len(all_articles)}개 기사 수집 완료")
+    all_articles = sorted(domestic_articles + international_articles, 
+                          key=lambda x: parsedate_tz(x['published']) if x['published'] else datetime.now(), 
+                          reverse=True)
     
+    print(f"  ✅ [{keyword}] 총 {len(all_articles)}개 기사 수집 완료")
     return all_articles
 
 def summarize_news_with_gemini(keyword, articles):
-    """Gemini API로 뉴스 요약 (개조식 형태)"""
+    """Gemini API로 뉴스 요약 (헤드라인 목록 + 2-3줄 요약)"""
     if not articles:
         emoji = KEYWORD_EMOJIS.get(keyword, '📰')
         return f"{emoji} {keyword}\n• 오늘은 관련 주요 뉴스가 없었습니다."
-    
+
     print(f"🤖 [{keyword}] AI 요약 생성 중...")
-    
-    articles_text = ""
-    for i, article in enumerate(articles, 1):
+
+    # 헤드라인 목록 생성
+    headlines = []
+    articles_text_for_summary = ""
+    for i, article in enumerate(articles[:5], 1): # 최대 5개 뉴스만 사용
+        headlines.append(f"{i}. {article['title']}")
         source_type = "🌍해외" if article['source'] == 'international' else "🇰🇷국내"
-        articles_text += f"\n[{source_type} 기사 {i}]\n제목: {article['title']}\n내용: {article['summary'][:300]}\n"
+        articles_text_for_summary += f"\n[{source_type} 기사 {i}]\n제목: {article['title']}\n내용: {article['summary'][:300]}\n"
+
+    headlines_text = "\n".join(headlines)
+    emoji = KEYWORD_EMOJIS.get(keyword, '📰')
     
-    prompt = f"""다음은 '{keyword}' 관련 오늘의 주요 뉴스들입니다. 읽기 쉬운 개조식으로 요약해주세요.
+    # Gemini 프롬프트 수정
+    prompt = f"""'{keyword}' 관련 최신 뉴스 목록입니다.
 
-{articles_text}
+[뉴스 헤드라인 목록]
+{headlines_text}
 
-요약 형식:
-1. 각 주요 내용을 개조식(• 문장)으로 작성
-2. 최대 5개 항목으로 제한  
-3. 각 항목은 한 줄로 간결하게
-4. 구체적 수치나 핵심 키워드 포함
-5. "~했다", "~됐다" 등 과거형 사용
-6. 중요도 순으로 배열
+[참고용 뉴스 내용]
+{articles_text_for_summary}
 
-예시 형식:
-• 첫 번째 핵심 내용이다
-• 두 번째 중요한 소식이다
-• 세 번째 주요 사건이다
+[요청]
+위 뉴스 헤드라인 목록과 참고용 내용을 바탕으로, 전체적인 핵심 내용을 2~3줄의 문장으로 요약해주세요.
 
-요약 (개조식):"""
+[요약]
+"""
 
     try:
         response = model.generate_content(
             prompt,
             generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
-                max_output_tokens=1500,
+                temperature=0.5,
+                max_output_tokens=1000,
                 top_p=0.8,
                 top_k=40
             )
@@ -227,77 +228,58 @@ def summarize_news_with_gemini(keyword, articles):
         summary = response.text.strip()
         
         if not summary:
-            emoji = KEYWORD_EMOJIS.get(keyword, '📰')
-            return f"{emoji} {keyword}\n• 요약 생성에 실패했습니다."
+            summary = "AI 요약 생성에 실패했습니다."
+
+        # 최종 결과 포맷팅
+        formatted_summary = f"{emoji} {keyword}\n"
+        formatted_summary += f"{headlines_text}\n\n"
+        formatted_summary += f"* {summary.replace('*', '').strip()}"
         
-        lines = [line.strip() for line in summary.split('\n') if line.strip()]
-        bullet_points = []
-        
-        for line in lines:
-            if line.startswith('•') or line.startswith('-') or line.startswith('*'):
-                bullet_points.append(line if line.startswith('•') else f"• {line[1:].strip()}")
-            elif not any(line.startswith(prefix) for prefix in ['요약', '형식', '예시']):
-                bullet_points.append(f"• {line}")
-        
-        if len(bullet_points) > 5:
-            bullet_points = bullet_points[:5]
-        
-        if not bullet_points:
-            emoji = KEYWORD_EMOJIS.get(keyword, '📰')
-            return f"{emoji} {keyword}\n• 충분한 요약 내용을 생성하지 못했습니다."
-            
-        print(f"  ✅ [{keyword}] 요약 완료 ({len(bullet_points)}개 항목)")
-        
-        emoji = KEYWORD_EMOJIS.get(keyword, '📰')
-        formatted_summary = f"{emoji} {keyword}\n" + "\n".join(bullet_points)
-        
+        print(f"  ✅ [{keyword}] 요약 완료")
         return formatted_summary
         
     except Exception as e:
         print(f"  ❌ [{keyword}] 요약 실패: {str(e)}")
-        emoji = KEYWORD_EMOJIS.get(keyword, '📰')
-        return f"{emoji} {keyword}\n• AI 요약 생성 중 오류가 발생했습니다."
+        # 오류 발생 시 헤드라인만이라도 반환
+        error_summary = f"{emoji} {keyword}\n"
+        error_summary += f"{headlines_text}\n\n"
+        error_summary += "* AI 요약 생성 중 오류가 발생했습니다."
+        return error_summary
 
 def prepare_tts_text_with_pauses(text_content):
-    """TTS용 텍스트 준비 - SSML로 간격 추가"""
+    """TTS용 텍스트 준비 - SSML로 간격 추가 및 특수문자 처리"""
     
-    # 1. 기본 정리 (이모티콘 제거 등)
+    # 1. 기본 정리 (이모티콘, 서식 문자 제거)
     clean_content = text_content
     clean_content = re.sub(r'[🪖🏛️📈🤖📰🌍🇰🇷]', '', clean_content)  # 이모티콘 제거
     clean_content = re.sub(r'[─]+', '', clean_content)  # 구분선 제거
+    clean_content = re.sub(r'^\d+\.\s*', '', clean_content, flags=re.MULTILINE) # '1. ' 같은 헤드라인 번호 제거
+    clean_content = re.sub(r'^\*\s*', '', clean_content, flags=re.MULTILINE)   # '* ' 같은 요약 글머리 기호 제거
     clean_content = re.sub(r'•', '', clean_content)  # 불릿 기호 제거
-    clean_content = re.sub(r'\s+', ' ', clean_content).strip()  # 공백 정리
     
     # 2. 길이 제한
-    if len(clean_content) > 3000:
-        clean_content = clean_content[:3000] + "이상으로 오늘의 뉴스 요약을 마치겠습니다."
+    if len(clean_content) > 4000: # SSML 태그 길이를 고려하여 약간 늘림
+        clean_content = clean_content[:4000]
     
     # 3. 텍스트를 줄 단위로 분할하여 SSML로 변환
     lines = clean_content.split('\n')
     
     # 4. SSML 형식으로 변환 - 각 줄 사이에 0.5초 간격
-    ssml_content = '<speak>'
-    
-    for i, line in enumerate(lines):
+    ssml_parts = []
+    for line in lines:
         line = line.strip()
-        if not line:  # 빈 줄은 건너뛰기
+        if not line:
             continue
-            
-        # 각 줄을 추가
-        ssml_content += f'{line}'
         
-        # 마지막 줄이 아니면 0.5초 간격 추가
-        if i < len(lines) - 1 and line:
-            ssml_content += '<break time="0.5s"/>'
+        # SSML에 부적합한 특수문자(&, <, >) 이스케이프
+        escaped_line = html.escape(line)
+        ssml_parts.append(escaped_line)
     
-    ssml_content += '</speak>'
+    # 각 줄을 <break> 태그로 연결
+    ssml_body = '<break time="0.5s"/>'.join(ssml_parts)
     
-    # 5. 특수 케이스 처리
-    ssml_content = ssml_content.replace('|', '<break time="0.3s"/>')  # 구분자를 짧은 간격으로
-    ssml_content = ssml_content.replace('완료', '완료<break time="0.7s"/>')  # 완료 후 긴 간격
-    
-    # 6. 시작 멘트 추가
-    final_ssml = '<speak>오늘의 주요 뉴스를 요약해드리겠습니다.<break time="1s"/>' + ssml_content[7:]  # <speak> 중복 제거
+    # 5. 최종 SSML 조립
+    final_ssml = f'<speak>오늘의 주요 뉴스를 요약해드리겠습니다.<break time="1s"/>{ssml_body}</speak>'
     
     return final_ssml
 
@@ -441,24 +423,25 @@ async def main():
     all_summaries = []
     success_count = 0
     
-    for keyword in KEYWORD_FEEDS.keys():
+    async def process_keyword(keyword):
         try:
             print(f"\n{'='*60}")
             print(f"🎯 [{keyword}] 처리 시작")
             
-            articles = collect_news_by_keyword(keyword, max_domestic=5, max_international=2)
+            articles = await collect_news_by_keyword(keyword, max_domestic=5, max_international=2)
             summary = summarize_news_with_gemini(keyword, articles)
-            all_summaries.append(summary)
-            success_count += 1
             
             print(f"✅ [{keyword}] 처리 완료")
-            time.sleep(2)
-            
+            return summary
         except Exception as e:
-            emoji = KEYWORD_EMOJIS.get(keyword, '📰')
-            error_summary = f"{emoji} {keyword}\n• 처리 중 오류가 발생했습니다: {str(e)}"
-            all_summaries.append(error_summary)
             print(f"❌ [{keyword}] 처리 실패: {str(e)}")
+            emoji = KEYWORD_EMOJIS.get(keyword, '📰')
+            return f"{emoji} {keyword}\n• 처리 중 오류가 발생했습니다: {str(e)}"
+
+    # asyncio.gather를 사용하여 모든 키워드를 병렬로 처리
+    summary_tasks = [process_keyword(keyword) for keyword in KEYWORD_FEEDS.keys()]
+    all_summaries = await asyncio.gather(*summary_tasks)
+    success_count = sum(1 for s in all_summaries if "오류" not in s)
     
     header = f"📰 {today.strftime('%m/%d')} {weekday} 뉴스요약"
     
