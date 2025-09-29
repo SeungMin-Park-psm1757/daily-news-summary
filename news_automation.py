@@ -1,4 +1,4 @@
-# 북한 군사/정치 뉴스 필터링 + 요약 포맷 개선 버전
+# 북한 군사/정치 뉴스 필터링 + 요약 포맷 개선 (헤드라인 3개, 중복 제거, 상세 3줄 요약)
 
 def is_north_korea_military_or_politics(article):
     """북한 군사/정치 뉴스 필터링 함수"""
@@ -6,6 +6,17 @@ def is_north_korea_military_or_politics(article):
     title = article.get('title', '')
     summary = article.get('summary', '')
     return any(k in title or k in summary for k in keywords)
+
+def deduplicate_articles(articles, max_count=3):
+    """유사 기사 중복 제거 및 최대 개수 제한"""
+    seen = set()
+    unique_articles = []
+    for article in articles:
+        key = article['title'].strip()
+        if key not in seen and len(unique_articles) < max_count:
+            seen.add(key)
+            unique_articles.append(article)
+    return unique_articles
 
 async def collect_news_by_keyword(keyword, max_domestic=5, max_international=2):
     print(f"\n📰 [{keyword}] 뉴스 수집 중...")
@@ -54,9 +65,8 @@ async def collect_news_by_keyword(keyword, max_domestic=5, max_international=2):
         if len(domestic_articles) >= max_domestic and len(international_articles) >= max_international:
             break
 
-    all_articles = sorted(domestic_articles + international_articles, 
-                          key=lambda x: parsedate_tz(x['published']) if x['published'] else datetime.now(), 
-                          reverse=True)
+    # 중복 제거 및 최대 3개로 제한 (국내+국제 합산)
+    all_articles = deduplicate_articles(domestic_articles + international_articles, max_count=3)
     return all_articles
 
 def summarize_news_with_gemini(keyword, articles):
@@ -64,9 +74,11 @@ def summarize_news_with_gemini(keyword, articles):
         emoji = KEYWORD_EMOJIS.get(keyword, '📰')
         return f"{emoji} {keyword}\n• 오늘은 관련 주요 뉴스가 없었습니다."
 
+    # 중복 제거 및 최대 3개 헤드라인
+    unique_articles = deduplicate_articles(articles, max_count=3)
     headlines = []
     articles_text_for_summary = ""
-    for i, article in enumerate(articles[:5], 1):
+    for i, article in enumerate(unique_articles, 1):
         headlines.append(f"{i}. {article['title']}")
         source_type = "🌍해외" if article['source'] == 'international' else "🇰🇷국내"
         articles_text_for_summary += f"\n[{source_type} 기사 {i}]\n제목: {article['title']}\n내용: {article['summary'][:300]}\n"
@@ -74,11 +86,11 @@ def summarize_news_with_gemini(keyword, articles):
     headlines_text = "\n".join(headlines)
     emoji = KEYWORD_EMOJIS.get(keyword, '📰')
 
-    # Gemini 프롬프트: 군사/정치 핵심 이슈만, 불필요 정보 제외
+    # Gemini 프롬프트: 군사/정치 핵심 이슈만, 불필요 정보 제외, 3줄로 상세 요약
     prompt = (
-        f"'{keyword}' 관련 최신 뉴스 중 군사/정치 이슈만 골라 2~3줄로 요약해줘. "
-        "날씨, 문화, 기타 비관련 내용은 모두 제외해줘. 각 뉴스 제목을 먼저 나열하고, 아래에 핵심만 요약해줘.\n"
-        f"[뉴스 헤드라인 목록]\n{headlines_text}\n\n[참고용 뉴스 내용]\n{articles_text_for_summary}\n[요약]"
+        f"'{keyword}' 관련 최신 뉴스 중 군사/정치 이슈만 골라, 유사한 내용은 생략하고, 3개의 주요 헤드라인만 제시해줘. "
+        "각 뉴스 제목을 먼저 나열하고, 아래에 핵심만 3줄로 상세하게 요약해줘. 날씨, 문화, 기타 비관련 내용은 모두 제외해줘.\n"
+        f"[주요 헤드라인]\n{headlines_text}\n\n[참고용 뉴스 내용]\n{articles_text_for_summary}\n[요약(3줄)]"
     )
 
     try:
@@ -96,14 +108,14 @@ def summarize_news_with_gemini(keyword, articles):
             summary = "AI 요약 생성에 실패했습니다."
         formatted_summary = (
             f"{emoji} {keyword}\n"
-            f"[헤드라인]\n{headlines_text}\n\n"
+            f"[주요 헤드라인]\n{headlines_text}\n\n"
             f"[요약]\n{summary.replace('*', '').strip()}"
         )
         return formatted_summary
     except Exception as e:
         error_summary = (
             f"{emoji} {keyword}\n"
-            f"[헤드라인]\n{headlines_text}\n\n"
+            f"[주요 헤드라인]\n{headlines_text}\n\n"
             f"[요약]\n* AI 요약 생성 중 오류가 발생했습니다. 헤드라인만 참고해주세요."
         )
         return error_summary
