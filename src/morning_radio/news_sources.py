@@ -1,0 +1,389 @@
+from __future__ import annotations
+
+import hashlib
+import html
+import re
+from datetime import UTC, datetime, timedelta
+from urllib.parse import quote_plus
+
+import feedparser
+import requests
+from dateutil import parser as date_parser
+
+from morning_radio.models import CategoryDefinition, NewsItem
+
+USER_AGENT = (
+    "Mozilla/5.0 (compatible; MorningRadio/0.1; +https://github.com/actions)"
+)
+
+GOOGLE_NEWS_SEARCH = "https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
+
+SOURCE_BOOSTS = {
+    "reuters": 8,
+    "associated press": 8,
+    "ap": 8,
+    "bloomberg": 8,
+    "연합뉴스": 7,
+    "연합인포맥스": 6,
+    "financial times": 6,
+    "wsj": 6,
+    "wall street journal": 6,
+    "economist": 5,
+    "중앙일보": 4,
+    "한겨레": 4,
+    "한국경제": 4,
+    "매일경제": 4,
+    "조선일보": 4,
+    "동아일보": 4,
+    "경향신문": 4,
+    "서울경제": 4,
+    "아시아경제": 3,
+    "문화일보": 3,
+}
+
+GLOBAL_PRIORITY_TERMS = (
+    "속보",
+    "긴급",
+    "합의",
+    "회담",
+    "정상",
+    "제재",
+    "관세",
+    "휴전",
+    "공격",
+    "전쟁",
+    "파병",
+    "미사일",
+    "배치",
+    "훈련",
+    "금리",
+    "환율",
+    "inflation",
+    "tariff",
+    "oil",
+    "fed",
+    "openai",
+    "deepmind",
+    "anthropic",
+    "nvidia",
+    "quantum",
+)
+
+GLOBAL_PENALTY_TERMS = (
+    "opinion",
+    "사설",
+    "칼럼",
+    "기고",
+    "홍보",
+    "광고",
+    "sponsored",
+    "행사",
+    "개최",
+    "세미나",
+    "포럼",
+    "박람회",
+    "presented by",
+)
+
+CATEGORIES: tuple[CategoryDefinition, ...] = (
+    CategoryDefinition(
+        key="korea_politics",
+        label="한국정치",
+        queries=(
+            "한국 정치 OR 대통령 OR 국회 OR 여당 OR 야당 when:1d",
+            "헌법재판소 OR 선거 OR 총리 OR 내각 when:1d",
+        ),
+        priority_terms=("대통령", "국회", "여야", "개헌", "선거", "내각", "헌재"),
+        penalty_terms=("지방행사", "축제", "개최"),
+    ),
+    CategoryDefinition(
+        key="global_affairs",
+        label="세계정세",
+        queries=(
+            "외교 OR 정상회담 OR 제재 OR 중동 OR 유럽 OR 중국 OR 미국 when:1d",
+            "world affairs OR diplomacy OR summit OR sanctions when:1d",
+        ),
+        priority_terms=("중동", "정상회담", "외교", "제재", "관세", "유가", "중국", "미국"),
+        penalty_terms=("지역축제", "관광", "개최"),
+    ),
+    CategoryDefinition(
+        key="military_strategy",
+        label="군사학",
+        queries=(
+            "군사 OR 안보 OR conflict OR 전쟁 OR 훈련 when:1d",
+            "military strategy OR defense posture OR military exercise when:1d",
+        ),
+        priority_terms=("전쟁", "휴전", "훈련", "병력", "안보", "공습", "종전"),
+        penalty_terms=("opinion", "주가"),
+    ),
+    CategoryDefinition(
+        key="weapon_systems",
+        label="무기체계",
+        queries=(
+            "무기체계 OR missile OR drone OR radar OR fighter jet when:1d",
+            "air defense OR naval weapons OR hypersonic when:1d",
+        ),
+        priority_terms=("미사일", "방공", "드론", "레이더", "전투기", "잠수함", "hypersonic"),
+        penalty_terms=("opinion", "stocks", "주가"),
+    ),
+    CategoryDefinition(
+        key="artificial_intelligence",
+        label="AI",
+        queries=(
+            "AI OR 인공지능 OR LLM OR generative AI when:1d",
+            "OpenAI OR Google DeepMind OR Anthropic OR Nvidia AI when:1d",
+        ),
+        priority_terms=("openai", "deepmind", "anthropic", "nvidia", "llm", "추론", "모델"),
+        penalty_terms=("행사", "개최", "세미나", "홍보", "presented by", "모집", "program"),
+    ),
+    CategoryDefinition(
+        key="quantum",
+        label="양자",
+        queries=(
+            "양자 OR quantum computing OR quantum chip when:1d",
+            "quantum error correction OR superconducting qubit OR photonic quantum when:1d",
+        ),
+        priority_terms=("quantum", "qubit", "양자컴퓨팅", "오류정정", "칩", "pqc"),
+        penalty_terms=("홍보", "행사", "개최"),
+    ),
+    CategoryDefinition(
+        key="economy",
+        label="경제",
+        queries=(
+            "경제 OR inflation OR interest rate OR 환율 OR stock market when:1d",
+            "oil prices OR tariffs OR trade OR central bank when:1d",
+        ),
+        priority_terms=("금리", "환율", "인플레이션", "관세", "유가", "수출", "중앙은행"),
+        penalty_terms=("코인광고", "세미나", "개최"),
+    ),
+)
+
+
+def _build_feed_url(query: str) -> str:
+    return GOOGLE_NEWS_SEARCH.format(query=quote_plus(query))
+
+
+def _clean_html(value: str | None) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", value)
+    text = html.unescape(text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _extract_source(entry: feedparser.FeedParserDict, title: str) -> tuple[str, str]:
+    if " - " in title:
+        maybe_title, maybe_source = title.rsplit(" - ", 1)
+        if maybe_source:
+            return maybe_title.strip(), maybe_source.strip()
+    source = ""
+    if "source" in entry and getattr(entry.source, "title", None):
+        source = str(entry.source.title).strip()
+    return title.strip(), source or "Unknown source"
+
+
+def _parse_published(entry: feedparser.FeedParserDict) -> datetime | None:
+    for field in ("published", "updated", "pubDate"):
+        raw = entry.get(field)
+        if raw:
+            try:
+                parsed = date_parser.parse(str(raw))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=UTC)
+                return parsed.astimezone(UTC)
+            except (ValueError, TypeError, OverflowError):
+                continue
+    return None
+
+
+def _fingerprint(title: str, source: str) -> str:
+    normalized = re.sub(r"\s+", " ", title.lower()).strip()
+    normalized = re.sub(r"[\"'`“”‘’]", "", normalized)
+    payload = f"{normalized}|{source.lower().strip()}"
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _count_hits(text: str, terms: tuple[str, ...]) -> int:
+    lowered = text.lower()
+    return sum(1 for term in terms if term.lower() in lowered)
+
+
+def _source_boost(source: str) -> float:
+    lowered = source.lower()
+    for key, value in SOURCE_BOOSTS.items():
+        if key in lowered:
+            return float(value)
+    if "." in source:
+        return -1.0
+    return 0.0
+
+
+def _score_article(
+    *,
+    category: CategoryDefinition,
+    title: str,
+    summary: str,
+    source: str,
+    published_at: datetime,
+    now: datetime,
+) -> float:
+    combined = f"{title} {summary}"
+    age_hours = max((now - published_at).total_seconds() / 3600.0, 0.0)
+    recency_score = max(3.0, 20.0 - (age_hours * 0.9))
+    priority_score = min(_count_hits(combined, GLOBAL_PRIORITY_TERMS) * 4.0, 20.0)
+    category_score = min(_count_hits(combined, category.priority_terms) * 6.0, 18.0)
+    penalty_score = min(_count_hits(combined, GLOBAL_PENALTY_TERMS) * 10.0, 20.0)
+    category_penalty = min(_count_hits(combined, category.penalty_terms) * 8.0, 16.0)
+    summary_bonus = 4.0 if summary else 0.0
+
+    total = 18.0 + recency_score + priority_score + category_score + summary_bonus + _source_boost(source)
+    total -= penalty_score + category_penalty
+    return round(max(0.0, min(total, 100.0)), 1)
+
+
+def _extract_meta_content(html_text: str, key: str, attribute: str) -> str:
+    pattern = rf'<meta[^>]+{attribute}=["\']{re.escape(key)}["\'][^>]+content=["\']([^"\']+)["\']'
+    match = re.search(pattern, html_text, flags=re.IGNORECASE)
+    if match:
+        return html.unescape(match.group(1)).strip()
+    reverse_pattern = rf'<meta[^>]+content=["\']([^"\']+)["\'][^>]+{attribute}=["\']{re.escape(key)}["\']'
+    match = re.search(reverse_pattern, html_text, flags=re.IGNORECASE)
+    if match:
+        return html.unescape(match.group(1)).strip()
+    return ""
+
+
+def _clean_snippet(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", text)
+    cleaned = html.unescape(cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:500]
+
+
+def fetch_category_news(
+    category: CategoryDefinition,
+    *,
+    hours_back: int,
+    per_query_limit: int,
+    now: datetime | None = None,
+) -> list[NewsItem]:
+    reference_time = now or datetime.now(tz=UTC)
+    cutoff = reference_time - timedelta(hours=hours_back)
+    collected: dict[str, NewsItem] = {}
+
+    for query in category.queries:
+        url = _build_feed_url(query)
+        try:
+            response = requests.get(
+                url,
+                timeout=20,
+                headers={"User-Agent": USER_AGENT, "Accept": "application/rss+xml"},
+            )
+            response.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        parsed = feedparser.parse(response.text)
+        for entry in parsed.entries[: per_query_limit * 2]:
+            published_at = _parse_published(entry)
+            if not published_at or published_at < cutoff:
+                continue
+
+            raw_title = str(entry.get("title", "")).strip()
+            clean_title, source = _extract_source(entry, raw_title)
+            if not clean_title:
+                continue
+
+            item = NewsItem(
+                category=category.key,
+                title=clean_title,
+                source=source,
+                url=str(entry.get("link", "")).strip(),
+                published_at=published_at,
+                summary=_clean_html(entry.get("summary", "")),
+                query=query,
+                fingerprint=_fingerprint(clean_title, source),
+                score=_score_article(
+                    category=category,
+                    title=clean_title,
+                    summary=_clean_html(entry.get("summary", "")),
+                    source=source,
+                    published_at=published_at,
+                    now=reference_time,
+                ),
+            )
+            collected.setdefault(item.fingerprint, item)
+
+    items = sorted(
+        collected.values(),
+        key=lambda article: (article.score, article.published_at),
+        reverse=True,
+    )
+    return items[:per_query_limit]
+
+
+def collect_news(
+    *,
+    hours_back: int,
+    per_query_limit: int,
+    now: datetime | None = None,
+) -> dict[str, list[NewsItem]]:
+    grouped: dict[str, list[NewsItem]] = {}
+    global_seen: set[str] = set()
+
+    for category in CATEGORIES:
+        items = []
+        for article in fetch_category_news(
+            category,
+            hours_back=hours_back,
+            per_query_limit=per_query_limit,
+            now=now,
+        ):
+            title_key = article.title.casefold()
+            if title_key in global_seen:
+                continue
+            global_seen.add(title_key)
+            items.append(article)
+        grouped[category.key] = items
+
+    return grouped
+
+
+def flatten_news(news_by_category: dict[str, list[NewsItem]]) -> list[NewsItem]:
+    flat: list[NewsItem] = []
+    for items in news_by_category.values():
+        flat.extend(items)
+    return sorted(flat, key=lambda item: item.published_at, reverse=True)
+
+
+def category_labels() -> dict[str, str]:
+    return {category.key: category.label for category in CATEGORIES}
+
+
+def enrich_articles(articles: list[NewsItem]) -> None:
+    for article in articles:
+        try:
+            response = requests.get(
+                article.url,
+                timeout=20,
+                headers={"User-Agent": USER_AGENT},
+            )
+            response.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        article.resolved_url = response.url
+        content_type = response.headers.get("Content-Type", "")
+        if "html" not in content_type.lower():
+            continue
+
+        html_text = response.text[:250000]
+        description = (
+            _extract_meta_content(html_text, "og:description", "property")
+            or _extract_meta_content(html_text, "description", "name")
+            or _extract_meta_content(html_text, "twitter:description", "name")
+        )
+        if description:
+            article.summary = _clean_snippet(description)

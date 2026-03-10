@@ -1,0 +1,49 @@
+name: Daily Morning Radio
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 21 * * *"
+
+jobs:
+  build-radio:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
+      MORNING_RADIO_ENABLE_TTS: "true"
+      MORNING_RADIO_OUTPUT_DIR: output
+      MORNING_RADIO_TIMEZONE: Asia/Seoul
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Build morning radio package
+        run: |
+          morning-radio
+
+      - name: Publish run summary
+        run: |
+          latest_dir="$(ls -1 output | sort | tail -n 1)"
+          cat "output/${latest_dir}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+        shell: bash
+
+      - name: Upload output artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: morning-radio-output
+          path: output/
+          if-no-files-found: error
