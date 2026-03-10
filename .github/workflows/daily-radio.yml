@@ -3,7 +3,7 @@ name: Daily Morning Radio
 on:
   workflow_dispatch:
   schedule:
-    - cron: "10 21 * * *"
+    - cron: "0 21 * * 0-4"
 
 jobs:
   build-radio:

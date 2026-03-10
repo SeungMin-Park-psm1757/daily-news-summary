@@ -50,7 +50,7 @@ morning-radio --skip-llm --skip-tts
 
 워크플로는 [`.github/workflows/daily-radio.yml`](.github/workflows/daily-radio.yml)에 들어 있습니다.
 
-- 기본 스케줄은 `21:10 UTC`, 즉 한국 시간 기준 `06:10 KST`입니다.
+- 기본 스케줄은 `일~목 21:00 UTC`, 즉 한국 시간 기준 `월~금 06:00 KST`입니다.
 - 저장소 시크릿에 `GEMINI_API_KEY`를 추가하세요.
 - 텔레그램 자동 발송까지 쓰려면 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 시크릿을 추가하세요.
 - 토픽형 그룹에 보낼 경우에만 `TELEGRAM_THREAD_ID`를 추가하면 됩니다.
