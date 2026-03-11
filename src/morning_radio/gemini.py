@@ -119,6 +119,7 @@ class GeminiEditor:
 - 각 story는 headline, angle, message_summary, why_it_matters, source_urls를 포함
 - angle은 기사 제목을 다시 옮기지 말고 핵심 내용만 1~2문장으로 요약
 - message_summary는 메신저 공유용 한 문장 요약이며, 제목과 같은 표현을 반복하지 말 것
+- message_summary는 가장 중요한 변화나 영향 1~2개에만 `**굵은 표시**`를 넣을 것
 - watch: 후속 관찰 포인트 1문장
 
 입력 기사:
@@ -209,9 +210,15 @@ quiet_categories:
         )
 
     def generate_audio(self, script_text: str) -> tuple[bytes, str]:
+        transcript = (
+            "Generate audio only for the following Korean radio transcript. "
+            "Do not add any explanation or extra narration. "
+            "Read each speaker turn exactly as written.\n\n"
+            f"{script_text.strip()}"
+        )
         response = self.client.models.generate_content(
             model=self.config.tts_model,
-            contents=script_text,
+            contents=transcript,
             config=types.GenerateContentConfig(
                 responseModalities=["AUDIO"],
                 speechConfig=types.SpeechConfig(

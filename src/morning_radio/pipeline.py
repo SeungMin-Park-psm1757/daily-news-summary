@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import array
 import json
 import re
-import wave
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -552,6 +552,7 @@ def _render_message_digest(
             summary = _message_summary(story)
             lines.append(f"- **{story['headline']}**")
             lines.append(f"  {summary}")
+            lines.append("")
 
     if quiet_categories:
         lines.append("")
@@ -562,14 +563,32 @@ def _render_message_digest(
 
 
 def _message_summary(story: dict[str, Any]) -> str:
-    candidate = story.get("message_summary") or story.get("angle") or story.get("why_it_matters") or ""
-    headline_tokens = _title_tokens(story.get("headline", ""))
-    summary_tokens = _title_tokens(candidate)
-    if headline_tokens and summary_tokens:
-        overlap_ratio = len(headline_tokens & summary_tokens) / len(headline_tokens)
-        if overlap_ratio >= 0.55 and story.get("why_it_matters"):
-            candidate = str(story["why_it_matters"])
-    return _ensure_sentence(str(candidate))
+    headline = str(story.get("headline", ""))
+    preferred_candidates = [
+        ("message_summary", story.get("message_summary")),
+        ("angle", _first_sentence(str(story.get("angle", "")))),
+        ("why_it_matters", story.get("why_it_matters")),
+    ]
+
+    for source, raw_candidate in preferred_candidates:
+        candidate = _ensure_sentence(str(raw_candidate or ""))
+        if not candidate:
+            continue
+        if source == "message_summary" and _headline_overlap_ratio(headline, candidate) >= 0.72:
+            continue
+        if source == "angle" and _is_generic_digest_sentence(candidate):
+            continue
+        return _emphasize_summary(candidate)
+
+    fallback = _ensure_sentence(
+        str(
+            story.get("message_summary")
+            or story.get("angle")
+            or story.get("why_it_matters")
+            or ""
+        )
+    )
+    return _emphasize_summary(fallback)
 
 
 def _render_summary(
@@ -634,36 +653,16 @@ def _render_summary(
     return "\n".join(lines).strip() + "\n"
 
 
-def _audio_suffix(mime_type: str) -> str:
-    lowered = mime_type.lower()
-    if "wav" in lowered:
-        return ".wav"
-    if "mpeg" in lowered or "mp3" in lowered:
-        return ".mp3"
-    if "ogg" in lowered:
-        return ".ogg"
-    return ".bin"
-
-
 def _write_audio_output(run_dir: Path, audio_bytes: bytes, mime_type: str) -> Path:
     lowered = mime_type.lower()
     if "audio/l16" in lowered or "codec=pcm" in lowered:
         sample_rate = _parse_sample_rate(lowered)
-        output_path = run_dir / "audio.wav"
-        pcm_little_endian = b"".join(
-            audio_bytes[index + 1 : index + 2] + audio_bytes[index : index + 1]
-            for index in range(0, len(audio_bytes), 2)
-            if len(audio_bytes[index : index + 2]) == 2
-        )
-        with wave.open(str(output_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(sample_rate)
-            wav_file.writeframes(pcm_little_endian)
+        pcm_bytes = _select_pcm_stream(audio_bytes)
+        output_path = run_dir / "audio.mp3"
+        output_path.write_bytes(_encode_mp3(pcm_bytes, sample_rate))
         return output_path
 
-    suffix = _audio_suffix(mime_type)
-    output_path = run_dir / f"audio{suffix}"
+    output_path = run_dir / "audio.mp3"
     output_path.write_bytes(audio_bytes)
     return output_path
 
@@ -673,6 +672,86 @@ def _parse_sample_rate(mime_type: str) -> int:
     if match:
         return int(match.group(1))
     return 24000
+
+
+def _emphasize_summary(text: str) -> str:
+    if "**" in text:
+        return text
+
+    stripped = text.rstrip(".!?")
+    if ", " in stripped:
+        lead, rest = stripped.split(", ", 1)
+        if 4 <= len(lead) <= 36 and rest:
+            return f"**{lead}**, {rest}."
+
+    return f"**{stripped}**."
+
+
+def _first_sentence(text: str) -> str:
+    cleaned = _ensure_sentence(text)
+    match = re.match(r"(.+?[.!?])(?:\s|$)", cleaned)
+    if match:
+        return match.group(1)
+    return cleaned
+
+
+def _headline_overlap_ratio(headline: str, summary: str) -> float:
+    headline_tokens = _title_tokens(headline)
+    summary_tokens = _title_tokens(summary)
+    if not headline_tokens or not summary_tokens:
+        return 0.0
+    return len(headline_tokens & summary_tokens) / len(headline_tokens)
+
+
+def _is_generic_digest_sentence(text: str) -> bool:
+    generic_phrases = (
+        "입장을 내놨습니다",
+        "움직임이 보도됐습니다",
+        "흐름이 부각됐습니다",
+        "판단하는 데 중요합니다",
+        "영향을 줄 수 있습니다",
+        "연쇄적으로 연결될 수 있습니다",
+    )
+    return any(phrase in text for phrase in generic_phrases)
+
+
+def _select_pcm_stream(audio_bytes: bytes) -> bytes:
+    trimmed = audio_bytes[: len(audio_bytes) - (len(audio_bytes) % 2)]
+    if not trimmed:
+        raise ValueError("Gemini TTS returned an empty PCM payload.")
+
+    swapped = b"".join(
+        trimmed[index + 1 : index + 2] + trimmed[index : index + 1]
+        for index in range(0, len(trimmed), 2)
+    )
+    return trimmed if _pcm_score(trimmed) <= _pcm_score(swapped) else swapped
+
+
+def _pcm_score(pcm_bytes: bytes) -> float:
+    probe = pcm_bytes[: min(len(pcm_bytes), 24000 * 2 * 12)]
+    samples = array.array("h")
+    samples.frombytes(probe)
+    if not samples:
+        return float("inf")
+
+    if len(samples) > 12000:
+        samples = samples[::4]
+
+    mean_abs = sum(abs(sample) for sample in samples) / len(samples)
+    delta = sum(abs(samples[index] - samples[index - 1]) for index in range(1, len(samples))) / max(len(samples) - 1, 1)
+    clip_ratio = sum(1 for sample in samples if abs(sample) >= 30000) / len(samples)
+    return (delta / max(mean_abs, 1.0)) + (clip_ratio * 3.0)
+
+
+def _encode_mp3(pcm_bytes: bytes, sample_rate: int) -> bytes:
+    import lameenc
+
+    encoder = lameenc.Encoder()
+    encoder.set_in_sample_rate(sample_rate)
+    encoder.set_channels(1)
+    encoder.set_bit_rate(48)
+    encoder.set_quality(5)
+    return encoder.encode(pcm_bytes) + encoder.flush()
 
 
 def _write_json(path: Path, payload: Any) -> None:
