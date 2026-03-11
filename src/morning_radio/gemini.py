@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import Any
 
 from google import genai
+from google.genai import errors
 from google.genai import types
 
 from morning_radio.config import AppConfig
@@ -210,18 +212,33 @@ quiet_categories:
         )
 
     def generate_audio(self, script_text: str) -> tuple[bytes, str]:
-        transcript = (
-            "Generate audio only for the following Korean radio transcript. "
-            "Do not add any explanation or extra narration. "
-            "Read each speaker turn exactly as written.\n\n"
-            f"{script_text.strip()}"
-        )
+        attempts = self.config.tts_retry_count + 1
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return self._generate_audio_once(script_text)
+            except errors.ClientError as exc:
+                last_error = exc
+                status_code = getattr(exc, "status_code", None)
+                is_retryable = status_code == 429 or "429" in str(exc)
+                if attempt >= attempts - 1 or not is_retryable:
+                    raise
+                time.sleep(_retry_delay_seconds(str(exc), self.config.tts_retry_delay_seconds))
+            except ValueError as exc:
+                last_error = exc
+                if attempt >= attempts - 1:
+                    raise
+                time.sleep(2)
+        raise ValueError(f"Gemini TTS failed after retries: {last_error}")
+
+    def _generate_audio_once(self, script_text: str) -> tuple[bytes, str]:
         response = self.client.models.generate_content(
             model=self.config.tts_model,
-            contents=transcript,
+            contents=self._build_tts_prompt(script_text),
             config=types.GenerateContentConfig(
                 responseModalities=["AUDIO"],
                 speechConfig=types.SpeechConfig(
+                    languageCode="ko-KR",
                     multiSpeakerVoiceConfig=types.MultiSpeakerVoiceConfig(
                         speakerVoiceConfigs=[
                             types.SpeakerVoiceConfig(
@@ -255,3 +272,39 @@ quiet_categories:
                     return inline_data.data, inline_data.mime_type or "audio/wav"
 
         raise ValueError("Gemini TTS response did not contain audio data.")
+
+    def _build_tts_prompt(self, script_text: str) -> str:
+        transcript = _format_tts_transcript(script_text)
+        return (
+            "# Korean Morning Radio TTS\n"
+            "Generate audio only for the transcript below.\n"
+            "Do not add explanations, labels, or extra narration.\n"
+            "Blank lines indicate silent handoff beats and must not be spoken.\n\n"
+            "## Director Notes\n"
+            "- Deliver at approximately "
+            f"{self.config.tts_speed_multiplier:.2f}x the pace of a standard Korean radio briefing.\n"
+            "- Keep diction crisp and natural, never rushed or clipped.\n"
+            "- After each speaker change, leave a clean pause about "
+            f"{self.config.tts_turn_pause_multiplier:.2f}x longer than a normal broadcast handoff.\n"
+            "- Maintain a calm, bright morning-news tone with steady loudness.\n"
+            "- Read each speaker turn exactly as written in Korean.\n\n"
+            "## Transcript\n"
+            f"{transcript}"
+        )
+
+
+def _format_tts_transcript(script_text: str) -> str:
+    lines = [line.strip() for line in script_text.splitlines() if line.strip()]
+    return "\n\n".join(lines)
+
+
+def _retry_delay_seconds(message: str, default_seconds: int) -> int:
+    match = re.search(r"retry in ([0-9.]+)s", message, flags=re.IGNORECASE)
+    if match:
+        return max(1, int(float(match.group(1))) + 1)
+
+    match = re.search(r"retryDelay['\"]?:\s*['\"]?(\d+)s", message, flags=re.IGNORECASE)
+    if match:
+        return max(1, int(match.group(1)))
+
+    return max(1, default_seconds)

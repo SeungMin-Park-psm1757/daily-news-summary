@@ -42,6 +42,10 @@ class AppConfig:
     analyst_name: str
     host_voice: str
     analyst_voice: str
+    tts_speed_multiplier: float
+    tts_turn_pause_multiplier: float
+    tts_retry_count: int
+    tts_retry_delay_seconds: int
     per_query_limit: int
     max_story_count: int
     score_threshold: float
@@ -112,6 +116,10 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         analyst_name=os.getenv("MORNING_RADIO_ANALYST_NAME", "ANALYST"),
         host_voice=os.getenv("MORNING_RADIO_HOST_VOICE", "Kore"),
         analyst_voice=os.getenv("MORNING_RADIO_ANALYST_VOICE", "Puck"),
+        tts_speed_multiplier=float(os.getenv("MORNING_RADIO_TTS_SPEED", "1.15")),
+        tts_turn_pause_multiplier=float(os.getenv("MORNING_RADIO_TTS_TURN_PAUSE", "1.3")),
+        tts_retry_count=int(os.getenv("MORNING_RADIO_TTS_RETRY_COUNT", "1")),
+        tts_retry_delay_seconds=int(os.getenv("MORNING_RADIO_TTS_RETRY_DELAY_SECONDS", "40")),
         per_query_limit=int(os.getenv("MORNING_RADIO_PER_QUERY_LIMIT", "12")),
         max_story_count=int(os.getenv("MORNING_RADIO_MAX_STORY_COUNT", "3")),
         score_threshold=float(os.getenv("MORNING_RADIO_SCORE_THRESHOLD", "45")),
