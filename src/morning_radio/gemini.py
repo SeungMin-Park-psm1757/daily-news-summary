@@ -156,9 +156,12 @@ class GeminiEditor:
         system_instruction = (
             "You are writing a Korean two-person morning news radio script. "
             "The voice should feel calm, informed, concise, and conversational. "
+            "The host is a composed male main anchor who speaks in short, clean setups. "
+            "The analyst is a bright female commentator who responds crisply, adds context, and occasionally reacts with brief natural bridge phrases. "
             f"Use the exact speaker labels {self.config.host_name} and {self.config.analyst_name} "
             "on every dialogue line. "
             "Summarize meaning and implications, not headlines. "
+            "Keep the exchange feeling like live radio banter rather than a long monologue. "
             "Avoid hype, avoid unverified claims, and mention uncertainty when needed."
         )
 
@@ -274,18 +277,22 @@ quiet_categories:
         raise ValueError("Gemini TTS response did not contain audio data.")
 
     def _build_tts_prompt(self, script_text: str) -> str:
-        transcript = _format_tts_transcript(script_text)
+        transcript = _format_tts_transcript(script_text, self.config.tts_turn_pause_multiplier)
         return (
             "# Korean Morning Radio TTS\n"
             "Generate audio only for the transcript below.\n"
             "Do not add explanations, labels, or extra narration.\n"
             "Blank lines indicate silent handoff beats and must not be spoken.\n\n"
+            "## Audio Profile\n"
+            f"- {self.config.host_name}: a calm male morning-news anchor with grounded authority and steady low-key confidence.\n"
+            f"- {self.config.analyst_name}: a bright female commentator with lighter tone, quick pickup, and warm conversational energy.\n\n"
             "## Director Notes\n"
             "- Deliver at approximately "
             f"{self.config.tts_speed_multiplier:.2f}x the pace of a standard Korean radio briefing.\n"
             "- Keep diction crisp and natural, never rushed or clipped.\n"
             "- After each speaker change, leave a clean pause about "
             f"{self.config.tts_turn_pause_multiplier:.2f}x longer than a normal broadcast handoff.\n"
+            "- Make the handoff feel like polished radio tteki-taka: clear turns, quick rebounds, and no deadpan delivery.\n"
             "- Maintain a calm, bright morning-news tone with steady loudness.\n"
             "- Read each speaker turn exactly as written in Korean.\n\n"
             "## Transcript\n"
@@ -293,9 +300,15 @@ quiet_categories:
         )
 
 
-def _format_tts_transcript(script_text: str) -> str:
+def _format_tts_transcript(script_text: str, pause_multiplier: float) -> str:
     lines = [line.strip() for line in script_text.splitlines() if line.strip()]
-    return "\n\n".join(lines)
+    if pause_multiplier >= 1.7:
+        separator = "\n\n\n\n"
+    elif pause_multiplier >= 1.4:
+        separator = "\n\n\n"
+    else:
+        separator = "\n\n"
+    return separator.join(lines)
 
 
 def _retry_delay_seconds(message: str, default_seconds: int) -> int:
