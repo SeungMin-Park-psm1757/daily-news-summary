@@ -4,7 +4,7 @@ import hashlib
 import html
 import re
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import feedparser
 import requests
@@ -17,6 +17,31 @@ USER_AGENT = (
 )
 
 GOOGLE_NEWS_SEARCH = "https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
+
+DOMAIN_BOOSTS = {
+    "reuters.com": 8.0,
+    "apnews.com": 8.0,
+    "bloomberg.com": 8.0,
+    "ft.com": 6.0,
+    "wsj.com": 6.0,
+    "economist.com": 5.0,
+    "yna.co.kr": 7.0,
+    "joongang.co.kr": 4.0,
+    "khan.co.kr": 4.0,
+    "mk.co.kr": 4.0,
+    "hankyung.com": 4.0,
+    "chosun.com": 4.0,
+    "donga.com": 4.0,
+    "sedaily.com": 4.0,
+}
+
+LOW_SIGNAL_DOMAINS = (
+    "youtube.com",
+    "youtu.be",
+    "blog",
+    "tistory.com",
+    "brunch.co.kr",
+)
 
 SOURCE_BOOSTS = {
     "reuters": 8,
@@ -218,12 +243,36 @@ def _source_boost(source: str) -> float:
     return 0.0
 
 
+def _extract_domain(url: str) -> str:
+    host = urlparse(url).netloc.lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _domain_boost(url: str) -> float:
+    domain = _extract_domain(url)
+    if not domain:
+        return 0.0
+    for key, value in DOMAIN_BOOSTS.items():
+        if domain.endswith(key):
+            return value
+    if any(signal in domain for signal in LOW_SIGNAL_DOMAINS):
+        return -4.0
+    return 0.0
+
+
+def _source_weight(source: str, url: str) -> float:
+    return round(_source_boost(source) + _domain_boost(url), 1)
+
+
 def _score_article(
     *,
     category: CategoryDefinition,
     title: str,
     summary: str,
     source: str,
+    url: str,
     published_at: datetime,
     now: datetime,
 ) -> float:
@@ -236,9 +285,23 @@ def _score_article(
     category_penalty = min(_count_hits(combined, category.penalty_terms) * 8.0, 16.0)
     summary_bonus = 4.0 if summary else 0.0
 
-    total = 18.0 + recency_score + priority_score + category_score + summary_bonus + _source_boost(source)
+    total = 18.0 + recency_score + priority_score + category_score + summary_bonus + _source_weight(source, url)
     total -= penalty_score + category_penalty
     return round(max(0.0, min(total, 100.0)), 1)
+
+
+def verification_flags_for_article(*, category_key: str, title: str, summary: str) -> list[str]:
+    combined = f"{title} {summary}"
+    flags: list[str] = []
+    if re.search(r"\b\d[\d,./%]*\b", combined):
+        flags.append("numeric_claim")
+    if any(mark in combined for mark in ('"', "“", "”", "'")):
+        flags.append("quoted_claim")
+    if category_key in {"global_affairs", "military_strategy", "weapon_systems"}:
+        flags.append("sensitive_geopolitics")
+    if "속보" in combined.lower() or "breaking" in combined.lower():
+        flags.append("breaking_update")
+    return flags
 
 
 def _extract_meta_content(html_text: str, key: str, attribute: str) -> str:
@@ -300,6 +363,7 @@ def fetch_category_news(
                 category=category.key,
                 title=clean_title,
                 source=source,
+                source_domain=_extract_domain(str(entry.get("link", "")).strip()),
                 url=str(entry.get("link", "")).strip(),
                 published_at=published_at,
                 summary=_clean_html(entry.get("summary", "")),
@@ -310,8 +374,15 @@ def fetch_category_news(
                     title=clean_title,
                     summary=_clean_html(entry.get("summary", "")),
                     source=source,
+                    url=str(entry.get("link", "")).strip(),
                     published_at=published_at,
                     now=reference_time,
+                ),
+                source_weight=_source_weight(source, str(entry.get("link", "")).strip()),
+                verification_flags=verification_flags_for_article(
+                    category_key=category.key,
+                    title=clean_title,
+                    summary=_clean_html(entry.get("summary", "")),
                 ),
             )
             collected.setdefault(item.fingerprint, item)

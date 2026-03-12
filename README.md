@@ -1,16 +1,24 @@
 # Morning Radio
 
-지난 24시간 동안의 주요 뉴스를 수집해서 한국어 아침 라디오 형식의 대화형 브리핑으로 만드는 Python MVP입니다.
+Morning Radio builds a weekday Korean morning news briefing from the last 24 hours and ships it as:
 
-## 무엇을 하나요
+- a ranked article digest
+- a two-speaker radio script
+- an optional MP3 audio file
+- a Telegram summary and audio delivery
+- a simple HTML archive page
 
-- 한국정치, 세계정세, 군사, 무기체계, AI, 양자, 경제 분야의 뉴스 후보를 RSS로 수집합니다.
-- 지난 24시간 기준으로 기사 후보를 추리고 중복을 제거합니다.
-- Gemini로 카테고리별 핵심 브리프를 만들고, `HOST`와 `ANALYST`가 대화하는 라디오 대본으로 엮습니다.
-- 선택적으로 Gemini TTS를 사용해 오디오 파일까지 생성합니다.
-- GitHub Actions 스케줄 실행을 바로 붙일 수 있습니다.
+## What It Does
 
-## 빠른 시작
+- Collects recent news for Korea politics, global affairs, military strategy, weapon systems, AI, quantum, and the economy.
+- Scores articles by recency, source reliability, signal terms, and low-signal penalties.
+- Clusters near-duplicate coverage so one event is represented once.
+- Produces a messenger digest with a short summary and a short "why it matters" line.
+- Generates a two-speaker Korean radio script with a calm host and a brighter analyst voice.
+- Uses Gemini TTS to create an MP3 when enabled.
+- Writes per-run output plus an HTML archive index.
+
+## Quick Start
 
 ```bash
 python -m venv .venv
@@ -19,46 +27,72 @@ pip install -e .
 copy .env.example .env
 ```
 
-`.env`에 `GEMINI_API_KEY`를 넣고 실행합니다. 실행 시 현재 디렉터리의 `.env`를 자동으로 읽습니다.
+Set `GEMINI_API_KEY` in `.env`, then run:
 
 ```bash
 morning-radio
 ```
 
-텍스트만 빠르게 검증하려면:
+For a no-API smoke test:
 
 ```bash
 morning-radio --skip-llm --skip-tts
 ```
 
-## 출력물
+## Main Outputs
 
-기본적으로 `output/YYYYMMDD-HHMMSS/` 아래에 생성됩니다.
+Each run writes to `output/YYYYMMDD-HHMMSS/`.
 
-- `news_items.json`: 수집된 기사 후보
-- `selected_items.json`: 점수 기준을 통과한 상위 기사
-- `category_briefs.json`: 카테고리별 브리프
-- `radio_show.json`: 최종 라디오 메타데이터
-- `radio_script.md`: 라디오 대본
-- `radio_script.txt`: TTS용 정리 텍스트
-- `message_digest.md`: 텔레그램/카카오톡 공유용 마크다운 요약
-- `summary.md`: 실행 요약
-- `audio.wav`: 생성된 음성
-- `run_metadata.json`: 실행 메타데이터
+- `news_items.json`: all collected items
+- `selected_items.json`: clustered and selected representatives
+- `category_briefs.json`: category-level brief objects
+- `radio_show.json`: final radio show metadata
+- `radio_script.md`: markdown radio script
+- `radio_script.txt`: plain text transcript for TTS
+- `message_digest.md`: Telegram-friendly digest
+- `summary.md`: run summary and quota log
+- `index.html`: run-level archive page
+- `audio.mp3`: generated TTS audio when available
+- `run_metadata.json`: machine-readable run metadata
+
+The root `output/index.html` file lists recent runs as a lightweight archive page.
+
+## Key Environment Variables
+
+- `GEMINI_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `TELEGRAM_THREAD_ID`
+- `MORNING_RADIO_ENABLE_TTS`
+- `MORNING_RADIO_TTS_MODE`
+  - `daily`: lighter weekday mode
+  - `manual`: higher-bitrate manual mode
+- `MORNING_RADIO_HOST_VOICE`
+- `MORNING_RADIO_ANALYST_VOICE`
+- `MORNING_RADIO_TTS_SPEED`
+- `MORNING_RADIO_TTS_TURN_PAUSE`
+- `MORNING_RADIO_TTS_RETRY_COUNT`
+- `MORNING_RADIO_TTS_RETRY_DELAY_SECONDS`
+- `MORNING_RADIO_ARCHIVE_LIMIT`
 
 ## GitHub Actions
 
-워크플로는 [`.github/workflows/daily-radio.yml`](.github/workflows/daily-radio.yml)에 들어 있습니다.
+The workflow is defined in `.github/workflows/daily-radio.yml`.
 
-- 기본 스케줄은 `일~목 21:00 UTC`, 즉 한국 시간 기준 `월~금 06:00 KST`입니다.
-- 저장소 시크릿에 `GEMINI_API_KEY`를 추가하세요.
-- 텔레그램 자동 발송까지 쓰려면 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 시크릿을 추가하세요.
-- 토픽형 그룹에 보낼 경우에만 `TELEGRAM_THREAD_ID`를 추가하면 됩니다.
-- 현재 워크플로는 TTS를 켜 둔 상태라, 오디오가 생성되면 텍스트 요약 뒤에 함께 전송합니다.
+- Schedule: weekday `06:00 KST`
+- The workflow uses `daily` TTS mode by default
+- Telegram delivery is enabled when the Telegram secrets are present
 
-## 설계 메모
+Required secrets:
 
-- 토큰 폭발을 막기 위해 원문 전체가 아니라 RSS 메타데이터 위주로 먼저 줄입니다.
-- 유사한 제목은 점수와 제목 토큰을 기준으로 중복 제거하고, 카테고리별 상위 기사만 남깁니다.
-- 카테고리별 브리프와 최종 라디오 대본 생성을 분리해서, 최종 생성 시점의 컨텍스트를 작게 유지합니다.
-- API 키가 없으면 휴리스틱 모드로 동작해서 파이프라인 자체는 검증할 수 있습니다.
+- `GEMINI_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `TELEGRAM_THREAD_ID` only for topic-based groups
+
+## Notes
+
+- Text generation and TTS share the same Gemini API key but use different models.
+- The main free-tier bottleneck is TTS, not text generation.
+- If TTS fails, the pipeline still delivers the text digest and preserves run metadata.
+- If LLM generation fails, the package falls back to heuristic summaries so the pipeline still completes.

@@ -55,6 +55,33 @@ def _markdown_to_plaintext(markdown: str) -> str:
     return text.strip()
 
 
+def _attach_story_metadata(stories: list[dict[str, Any]], articles: list[NewsItem]) -> list[dict[str, Any]]:
+    available = articles.copy()
+    normalized_stories: list[dict[str, Any]] = []
+
+    for story in stories:
+        normalized = dict(story)
+        headline = str(normalized.get("headline", "")).strip()
+        article = next((item for item in available if item.title == headline), None)
+        if article is None and available:
+            article = available[0]
+        if article is not None:
+            normalized.setdefault("headline", article.title)
+            normalized.setdefault("source", article.source)
+            normalized.setdefault("source_domain", article.source_domain)
+            normalized.setdefault("source_urls", [article.resolved_url or article.url])
+            normalized.setdefault("score", article.score)
+            normalized.setdefault("source_weight", article.source_weight)
+            normalized.setdefault("cluster_size", article.cluster_size)
+            normalized.setdefault("verification_flags", article.verification_flags or [])
+            normalized.setdefault("verification_note", "")
+            if article in available:
+                available.remove(article)
+        normalized_stories.append(normalized)
+
+    return normalized_stories
+
+
 class GeminiEditor:
     def __init__(self, config: AppConfig) -> None:
         if not config.gemini_api_key:
@@ -95,10 +122,14 @@ class GeminiEditor:
             {
                 "title": article.title,
                 "source": article.source,
+                "source_domain": article.source_domain,
                 "published_at": article.published_at.isoformat(),
                 "summary": article.summary,
-                "url": article.url,
+                "url": article.resolved_url or article.url,
                 "score": article.score,
+                "source_weight": article.source_weight,
+                "cluster_size": article.cluster_size,
+                "verification_flags": article.verification_flags or [],
             }
             for article in articles
         ]
@@ -111,20 +142,38 @@ class GeminiEditor:
             "Never invent quotes, figures, motives, or classified context."
         )
         prompt = f"""
-카테고리: {label} ({category})
-목표: 점수가 높은 기사만 바탕으로 한국어 브리프를 만드세요.
-반드시 JSON 객체 하나만 반환하세요.
+Category: {label} ({category})
+Goal: Build a Korean morning radio brief using only the supplied article metadata.
+Return exactly one JSON object.
 
-요구 사항:
-- lead: 오늘 이 분야의 큰 흐름을 1~3문장으로 설명
-- stories: 최대 {max_story_count}개
-- 각 story는 headline, angle, message_summary, why_it_matters, source_urls를 포함
-- angle은 기사 제목을 다시 옮기지 말고 핵심 내용만 1~2문장으로 요약
-- message_summary는 메신저 공유용 한 문장 요약이며, 제목과 같은 표현을 반복하지 말 것
-- message_summary는 가장 중요한 변화나 영향 1~2개에만 `**굵은 표시**`를 넣을 것
-- watch: 후속 관찰 포인트 1문장
+Required JSON shape:
+{{
+  "lead": "1-3 Korean sentences",
+  "stories": [
+    {{
+      "headline": "string",
+      "angle": "1-2 Korean sentences",
+      "message_summary": "1 Korean sentence for messenger delivery",
+      "why_it_matters": "1 short Korean sentence",
+      "verification_note": "short Korean note or empty string",
+      "source_urls": ["url"]
+    }}
+  ],
+  "watch": "1 Korean sentence"
+}}
 
-입력 기사:
+Rules:
+- Write all text fields in natural Korean.
+- Pick up to {max_story_count} stories, prioritizing high score, reliable sources, and bigger clusters.
+- `lead` should summarize the category's main movement, not list headlines.
+- `angle` should explain the actual development, not rephrase the headline.
+- `message_summary` should be compact, readable in a messenger, avoid headline duplication, and bold only the 1-2 most important changes using **...**.
+- `why_it_matters` should be shorter than `angle`.
+- `verification_note` should be empty if not needed. Use a short note such as "숫자와 인용은 원문 확인 필요" only when the metadata suggests extra caution.
+- Never invent quotes, figures, motives, battlefield details, or unnamed-source claims.
+- If details are thin, say the story is still developing.
+
+Articles:
 {_json_dumps(serializable_items)}
 """.strip()
 
@@ -136,11 +185,13 @@ class GeminiEditor:
             temperature=0.25,
         )
 
+        stories = _attach_story_metadata(list(payload.get("stories", []))[:max_story_count], articles)
+
         return CategoryBrief(
             category=category,
             label=label,
             lead=str(payload.get("lead", "")).strip(),
-            stories=list(payload.get("stories", []))[:max_story_count],
+            stories=stories,
             watch=str(payload.get("watch", "")).strip(),
         )
 
@@ -166,26 +217,35 @@ class GeminiEditor:
         )
 
         prompt = f"""
-지난 24시간 기준 라디오 대본을 작성하세요.
-시간 범위: {start_iso} ~ {end_iso}
-반드시 JSON 객체 하나만 반환하세요.
+Write a Korean morning radio script covering the last 24 hours.
+Time window: {start_iso} ~ {end_iso}
+Return exactly one JSON object.
 
-형식:
-- show_title: 1줄 제목
-- show_summary: 2문장 이하 요약
-- estimated_minutes: 6~10 사이 정수
-- script_markdown: 마크다운 문자열
+Required JSON shape:
+{{
+  "show_title": "string",
+  "show_summary": "up to 2 Korean sentences",
+  "estimated_minutes": 6-10,
+  "script_markdown": "markdown string"
+}}
 
-대본 규칙:
-- `{self.config.host_name}:`와 `{self.config.analyst_name}:` 라벨을 정확히 사용
-- 오프닝은 아래 두 문장을 그대로 사용
-- 각 분야는 "HOST 질문 -> ANALYST 핵심요약(1~3문장) -> HOST 추가 질문 -> ANALYST 답변" 구조로 작성
-- 기사 제목을 기계적으로 반복하지 말 것
-- 대신 "무슨 변화가 있었는지", "왜 중요한지", "뭘 더 봐야 하는지"를 말할 것
-- `ANALYST: 분야별로 상위 세 건만...` 같은 운영 설명은 넣지 말 것
-- 마지막에는 quiet_categories가 있으면 "오늘은 ... 분야에서 기준 점수를 넘는 특정 기사가 많지 않았다"는 식으로 한 번만 언급
-- 기사 URL은 대본에 직접 쓰지 말 것
-- 투자 조언, 선정적 표현, 과장된 단정 금지
+Script rules:
+- Use the exact speaker labels `{self.config.host_name}:` and `{self.config.analyst_name}:`.
+- Use the opening pair exactly as written.
+- For each category, follow this rhythm:
+  1. HOST setup question
+  2. ANALYST concise answer in 1-3 sentences
+  3. HOST short follow-up
+  4. ANALYST answer that explains why it matters or what to watch
+- Make it feel like polished live radio: crisp back-and-forth, brief acknowledgements, and no long monologues.
+- Vary transitions and category handoffs so the show does not sound repetitive.
+- Let the host sound steady and framing-focused; let the analyst sound quick, bright, and insight-driven.
+- Do not mechanically repeat headlines.
+- Focus on what changed, why it matters, and what to watch next.
+- Do not include operational filler such as "we picked the top three stories."
+- If `quiet_categories` is not empty, mention those categories once near the end in a single short exchange.
+- Do not include URLs in the script.
+- No investment advice, sensationalism, or overconfident claims.
 
 opening_pair:
 {_json_dumps(list(opening_pair))}
@@ -193,7 +253,7 @@ opening_pair:
 quiet_categories:
 {_json_dumps(quiet_categories)}
 
-브리프:
+briefs:
 {_json_dumps([brief.to_dict() for brief in briefs])}
 """.strip()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import array
+import html
 import json
 import re
 from datetime import UTC, datetime, timedelta
@@ -90,6 +91,22 @@ DEDUP_STEMS = (
     "양자",
 )
 
+TOKEN_ALIASES = {
+    "한미훈련": "joint_drill",
+    "군사훈련": "joint_drill",
+    "연합훈련": "joint_drill",
+    "훈련": "joint_drill",
+    "멈춰라": "halt_action",
+    "중단하라": "halt_action",
+    "중단": "halt_action",
+    "공격": "conflict_action",
+    "전쟁": "conflict_action",
+    "공습": "conflict_action",
+    "관세": "tariff_policy",
+    "환율": "fx_market",
+    "유가": "oil_market",
+}
+
 
 def run_pipeline(config: AppConfig) -> Path:
     now_utc = datetime.now(tz=UTC)
@@ -120,6 +137,7 @@ def run_pipeline(config: AppConfig) -> Path:
         if not selected_by_category.get(category.key)
     ]
     opening_pair = _opening_pair(now_utc.astimezone(config.timezone))
+    quota_log = _quota_log(config, selected_by_category)
 
     briefs = _build_briefs(config, selected_by_category)
     show = _build_show(config, briefs, quiet_categories, opening_pair, start_utc, now_utc)
@@ -151,7 +169,7 @@ def run_pipeline(config: AppConfig) -> Path:
         try:
             editor = GeminiEditor(config)
             audio_bytes, mime_type = editor.generate_audio(show.script_plaintext)
-            audio_path = _write_audio_output(run_dir, audio_bytes, mime_type)
+            audio_path = _write_audio_output(run_dir, audio_bytes, mime_type, config)
             audio_metadata = {"generated": True, "mime_type": mime_type, "path": audio_path.name}
         except Exception as exc:  # pragma: no cover - resilience path
             audio_metadata = {"generated": False, "error": str(exc)}
@@ -179,8 +197,11 @@ def run_pipeline(config: AppConfig) -> Path:
         show=show,
         audio_metadata=audio_metadata,
         telegram_metadata=telegram_metadata,
+        quota_log=quota_log,
     )
     (run_dir / "summary.md").write_text(summary, encoding="utf-8")
+    _write_run_archive_page(run_dir, show, briefs, audio_metadata)
+    _write_archive_index(config.output_dir, config.archive_limit)
     _write_json(
         run_dir / "run_metadata.json",
         {
@@ -191,6 +212,7 @@ def run_pipeline(config: AppConfig) -> Path:
             "tts_enabled": config.tts_enabled,
             "audio": audio_metadata,
             "telegram": telegram_metadata,
+            "quota_log": quota_log,
             "quiet_categories": quiet_categories,
             "run_dir": str(run_dir),
         },
@@ -205,16 +227,62 @@ def _opening_pair(local_dt: datetime) -> tuple[str, str]:
 
 def _select_top_articles(items: list[NewsItem], config: AppConfig) -> list[NewsItem]:
     ranked = sorted(items, key=lambda article: (article.score, article.published_at), reverse=True)
+    clusters = _cluster_articles(ranked)
     selected: list[NewsItem] = []
-    for article in ranked:
+    for cluster_index, cluster in enumerate(clusters, start=1):
+        article = _cluster_representative(cluster)
         if article.score < config.score_threshold:
             continue
-        if any(_is_duplicate_story(article, existing) for existing in selected):
-            continue
+        article.cluster_id = f"{article.category}-{cluster_index:02d}"
+        article.cluster_size = len(cluster)
         selected.append(article)
         if len(selected) >= config.max_story_count:
             break
     return selected
+
+
+def _cluster_articles(items: list[NewsItem]) -> list[list[NewsItem]]:
+    clusters: list[list[NewsItem]] = []
+    for article in items:
+        placed = False
+        for cluster in clusters:
+            if any(_cluster_similarity(article, existing) >= 0.34 for existing in cluster):
+                cluster.append(article)
+                placed = True
+                break
+        if not placed:
+            clusters.append([article])
+
+    return sorted(clusters, key=_cluster_rank, reverse=True)
+
+
+def _cluster_rank(cluster: list[NewsItem]) -> tuple[float, datetime]:
+    representative = _cluster_representative(cluster)
+    cluster_bonus = min(len(cluster) * 1.5, 6.0)
+    return (representative.score + representative.source_weight + cluster_bonus, representative.published_at)
+
+
+def _cluster_representative(cluster: list[NewsItem]) -> NewsItem:
+    return max(
+        cluster,
+        key=lambda article: (
+            article.score + article.source_weight + min(len(cluster) * 1.2, 5.0),
+            article.published_at,
+        ),
+    )
+
+
+def _cluster_similarity(left: NewsItem, right: NewsItem) -> float:
+    if _is_duplicate_story(left, right):
+        return 1.0
+
+    left_tokens = _story_tokens(left)
+    right_tokens = _story_tokens(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+
+    overlap = left_tokens & right_tokens
+    return len(overlap) / len(left_tokens | right_tokens)
 
 
 def _is_duplicate_story(left: NewsItem, right: NewsItem) -> bool:
@@ -229,6 +297,9 @@ def _is_duplicate_story(left: NewsItem, right: NewsItem) -> bool:
         if jaccard >= 0.45:
             return True
 
+        if len(_signal_tokens(left_tokens) & _signal_tokens(right_tokens)) >= 2:
+            return True
+
     left_subject = _headline_subject(left.title)
     right_subject = _headline_subject(right.title)
     stem_overlap = {
@@ -237,6 +308,14 @@ def _is_duplicate_story(left: NewsItem, right: NewsItem) -> bool:
     if left_subject and left_subject == right_subject and len(stem_overlap) >= 2:
         return True
     return False
+
+
+def _signal_tokens(tokens: set[str]) -> set[str]:
+    return {
+        token
+        for token in tokens
+        if token in TOKEN_ALIASES.values() or any(char.isdigit() for char in token)
+    }
 
 
 def _title_tokens(title: str) -> set[str]:
@@ -248,7 +327,23 @@ def _title_tokens(title: str) -> set[str]:
         if len(lowered) <= 1 or lowered in TITLE_STOPWORDS:
             continue
         tokens.add(lowered)
+        alias = TOKEN_ALIASES.get(lowered)
+        if alias:
+            tokens.add(alias)
+        if lowered.endswith("훈련"):
+            tokens.add("joint_drill")
+        if lowered.endswith("전쟁") or lowered.endswith("공격") or lowered.endswith("공습"):
+            tokens.add("conflict_action")
     return tokens
+
+
+def _story_tokens(article: NewsItem) -> set[str]:
+    summary_tokens = {
+        token.lower()
+        for token in re.findall(r"[0-9A-Za-z가-힣]{2,}", article.summary)
+        if len(token) > 2
+    }
+    return _title_tokens(article.title) | summary_tokens
 
 
 def _headline_subject(title: str) -> str:
@@ -328,10 +423,17 @@ def _fallback_brief(category: str, label: str, items: list[NewsItem]) -> Categor
         {
             "headline": article.title,
             "angle": _condense_article(article),
+            "message_summary": _fallback_message_summary(article),
             "why_it_matters": _why_it_matters(label),
+            "verification_note": _verification_note(article.verification_flags or []),
             "source_urls": [article.resolved_url or article.url],
             "score": article.score,
             "source": article.source,
+            "source_domain": article.source_domain,
+            "source_weight": article.source_weight,
+            "cluster_size": article.cluster_size,
+            "verification_flags": article.verification_flags or [],
+            "fallback_story": True,
         }
         for article in items
     ]
@@ -424,6 +526,29 @@ def _follow_up_question(label: str, stories: list[dict[str, Any]]) -> str:
         "경제": "시장과 정책 측면에서 어디를 가장 먼저 봐야 할까요?",
     }
     return topic_hints.get(label, "이 가운데 먼저 짚어볼 지점은 뭔가요?")
+
+
+def _fallback_message_summary(article: NewsItem) -> str:
+    condensed = _first_sentence(_condense_article(article))
+    if _headline_overlap_ratio(article.title, condensed) >= 0.82 and article.summary:
+        condensed = _first_sentence(_ensure_sentence(article.summary))
+    return condensed
+
+
+def _verification_note(flags: list[str]) -> str:
+    if not flags:
+        return ""
+
+    notes: list[str] = []
+    if "numeric_claim" in flags:
+        notes.append("숫자는 원문 확인 권장")
+    if "quoted_claim" in flags:
+        notes.append("인용은 원문 확인 권장")
+    if "breaking_update" in flags:
+        notes.append("속보성 이슈")
+    if "sensitive_geopolitics" in flags:
+        notes.append("민감 분야")
+    return ", ".join(notes[:2])
 
 
 def _condense_article(article: NewsItem) -> str:
@@ -540,7 +665,7 @@ def _render_message_digest(
     lines = [
         f"# {show_title} 요약",
         "",
-        "필요한 기사만 빠르게 찾아볼 수 있도록 핵심 제목과 한 줄 요약만 정리했습니다.",
+        "필요한 기사만 빠르게 찾아볼 수 있도록 핵심 제목, 한 줄 요약, 왜 중요한지만 짧게 정리했습니다.",
     ]
 
     for brief in briefs:
@@ -550,8 +675,14 @@ def _render_message_digest(
         lines.append(f"## {brief.label}")
         for story in brief.stories:
             summary = _message_summary(story)
+            why_it_matters = _message_why(story)
+            meta = _message_meta(story)
             lines.append(f"- **{story['headline']}**")
-            lines.append(f"  {summary}")
+            lines.append(f"  요약: {summary}")
+            if why_it_matters:
+                lines.append(f"  왜 중요하나: {why_it_matters}")
+            if meta:
+                lines.append(f"  메모: {meta}")
             lines.append("")
 
     if quiet_categories:
@@ -563,6 +694,10 @@ def _render_message_digest(
 
 
 def _message_summary(story: dict[str, Any]) -> str:
+    if story.get("fallback_story"):
+        candidate = _ensure_sentence(str(story.get("message_summary") or story.get("angle") or ""))
+        return _emphasize_summary(candidate)
+
     headline = str(story.get("headline", ""))
     preferred_candidates = [
         ("message_summary", story.get("message_summary")),
@@ -591,6 +726,27 @@ def _message_summary(story: dict[str, Any]) -> str:
     return _emphasize_summary(fallback)
 
 
+def _message_why(story: dict[str, Any]) -> str:
+    why = _ensure_sentence(str(story.get("why_it_matters") or ""))
+    if not why:
+        return ""
+    return why
+
+
+def _message_meta(story: dict[str, Any]) -> str:
+    bits: list[str] = []
+    source = str(story.get("source") or "").strip()
+    if source:
+        bits.append(f"출처 {source}")
+    cluster_size = int(story.get("cluster_size") or 1)
+    if cluster_size > 1:
+        bits.append(f"관련 기사 {cluster_size}건 묶음")
+    verification_note = str(story.get("verification_note") or "").strip()
+    if verification_note:
+        bits.append(verification_note)
+    return " | ".join(bits)
+
+
 def _render_summary(
     *,
     config: AppConfig,
@@ -603,6 +759,7 @@ def _render_summary(
     show: RadioShow,
     audio_metadata: dict[str, Any],
     telegram_metadata: dict[str, Any],
+    quota_log: dict[str, Any],
 ) -> str:
     lines = [
         f"# {show.show_title}",
@@ -613,6 +770,7 @@ def _render_summary(
         f"- TTS 사용: `{config.tts_enabled}`",
         f"- 오디오 생성: `{audio_metadata.get('generated', False)}`",
         f"- 텔레그램 전송: `{telegram_metadata.get('sent', False)}`",
+        f"- TTS 모드: `{config.tts_quality_mode}`",
         f"- 점수 임계치: `{config.score_threshold}`",
         "",
         "## 기사 수집 현황",
@@ -637,6 +795,12 @@ def _render_summary(
         lines.append(f"- {', '.join(show.quiet_categories)}")
 
     lines.append("")
+    lines.append("## 쿼터 로그")
+    lines.append(f"- 예상 텍스트 호출 수: `{quota_log['estimated_text_calls']}`")
+    lines.append(f"- 예상 TTS 호출 수: `{quota_log['estimated_tts_calls']}`")
+    lines.append(f"- TTS 비트레이트: `{config.tts_bitrate_kbps} kbps`")
+
+    lines.append("")
     lines.append("## 라디오 요약")
     lines.append(show.show_summary)
     lines.append("")
@@ -648,18 +812,19 @@ def _render_summary(
     lines.append("- `radio_script.md`")
     lines.append("- `radio_script.txt`")
     lines.append("- `message_digest.md`")
+    lines.append("- `index.html`")
     if audio_metadata.get("generated") and audio_metadata.get("path"):
         lines.append(f"- `{audio_metadata['path']}`")
     return "\n".join(lines).strip() + "\n"
 
 
-def _write_audio_output(run_dir: Path, audio_bytes: bytes, mime_type: str) -> Path:
+def _write_audio_output(run_dir: Path, audio_bytes: bytes, mime_type: str, config: AppConfig) -> Path:
     lowered = mime_type.lower()
     if "audio/l16" in lowered or "codec=pcm" in lowered:
         sample_rate = _parse_sample_rate(lowered)
         pcm_bytes = _select_pcm_stream(audio_bytes)
         output_path = run_dir / "audio.mp3"
-        output_path.write_bytes(_encode_mp3(pcm_bytes, sample_rate))
+        output_path.write_bytes(_encode_mp3(pcm_bytes, sample_rate, config.tts_bitrate_kbps))
         return output_path
 
     output_path = run_dir / "audio.mp3"
@@ -743,15 +908,109 @@ def _pcm_score(pcm_bytes: bytes) -> float:
     return (delta / max(mean_abs, 1.0)) + (clip_ratio * 3.0)
 
 
-def _encode_mp3(pcm_bytes: bytes, sample_rate: int) -> bytes:
+def _encode_mp3(pcm_bytes: bytes, sample_rate: int, bitrate_kbps: int) -> bytes:
     import lameenc
 
     encoder = lameenc.Encoder()
     encoder.set_in_sample_rate(sample_rate)
     encoder.set_channels(1)
-    encoder.set_bit_rate(48)
+    encoder.set_bit_rate(bitrate_kbps)
     encoder.set_quality(5)
     return encoder.encode(pcm_bytes) + encoder.flush()
+
+
+def _quota_log(config: AppConfig, selected_by_category: dict[str, list[NewsItem]]) -> dict[str, Any]:
+    populated_categories = sum(1 for items in selected_by_category.values() if items)
+    return {
+        "estimated_text_calls": (populated_categories + 1) if config.llm_enabled else 0,
+        "estimated_tts_calls": (config.tts_retry_count + 1) if config.tts_enabled else 0,
+        "tts_mode": config.tts_quality_mode,
+    }
+
+
+def _write_run_archive_page(
+    run_dir: Path,
+    show: RadioShow,
+    briefs: list[CategoryBrief],
+    audio_metadata: dict[str, Any],
+) -> None:
+    sections: list[str] = [
+        "<!doctype html>",
+        "<html lang='ko'>",
+        "<head>",
+        "<meta charset='utf-8'>",
+        f"<title>{html.escape(show.show_title)}</title>",
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+        "<style>",
+        "body{font-family:Segoe UI,Apple SD Gothic Neo,sans-serif;max-width:960px;margin:40px auto;padding:0 20px;line-height:1.6;background:#f7f8fb;color:#101828;}",
+        "main{background:#fff;border:1px solid #e4e7ec;border-radius:18px;padding:28px 32px;box-shadow:0 10px 30px rgba(16,24,40,.06);}",
+        "h1,h2{margin-top:0;}",
+        ".meta,.story{border-top:1px solid #eaecf0;padding-top:16px;margin-top:16px;}",
+        ".eyebrow{display:inline-block;background:#eef2ff;color:#3730a3;border-radius:999px;padding:4px 10px;font-size:13px;font-weight:600;}",
+        "audio{width:100%;margin:16px 0;}",
+        "a{color:#1d4ed8;text-decoration:none;}",
+        "</style>",
+        "</head>",
+        "<body><main>",
+        f"<span class='eyebrow'>Morning Radio Archive</span><h1>{html.escape(show.show_title)}</h1>",
+        f"<p>{html.escape(show.show_summary)}</p>",
+    ]
+
+    if audio_metadata.get("generated") and audio_metadata.get("path"):
+        audio_file = html.escape(str(audio_metadata["path"]))
+        sections.append(f"<audio controls src='{audio_file}'></audio>")
+
+    sections.append("<div class='meta'><h2>Files</h2><ul>")
+    for filename in ("summary.md", "message_digest.md", "radio_script.md", "radio_script.txt", "radio_show.json"):
+        sections.append(f"<li><a href='{html.escape(filename)}'>{html.escape(filename)}</a></li>")
+    if audio_metadata.get("generated") and audio_metadata.get("path"):
+        audio_name = str(audio_metadata["path"])
+        sections.append(f"<li><a href='{html.escape(audio_name)}'>{html.escape(audio_name)}</a></li>")
+    sections.append("</ul></div>")
+
+    for brief in briefs:
+        if not brief.stories:
+            continue
+        sections.append(f"<section class='story'><h2>{html.escape(brief.label)}</h2>")
+        sections.append(f"<p>{html.escape(brief.lead)}</p>")
+        sections.append("<ul>")
+        for story in brief.stories:
+            sections.append(f"<li><strong>{html.escape(str(story.get('headline', '')))}</strong><br>")
+            plain_summary = re.sub(r"\*\*(.*?)\*\*", r"\1", _message_summary(story))
+            sections.append(f"{html.escape(plain_summary)}<br>")
+            sections.append(f"<small>{html.escape(_message_why(story))}</small></li>")
+        sections.append("</ul></section>")
+
+    sections.append("</main></body></html>")
+    (run_dir / "index.html").write_text("\n".join(sections), encoding="utf-8")
+
+
+def _write_archive_index(output_dir: Path, limit: int) -> None:
+    run_dirs = sorted(
+        [path for path in output_dir.iterdir() if path.is_dir() and path.name.isdigit() is False],
+        key=lambda path: path.name,
+        reverse=True,
+    )[:limit]
+    sections = [
+        "<!doctype html>",
+        "<html lang='ko'>",
+        "<head><meta charset='utf-8'><title>Morning Radio Archive</title>",
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>",
+        "<style>body{font-family:Segoe UI,Apple SD Gothic Neo,sans-serif;max-width:960px;margin:40px auto;padding:0 20px;background:#f7f8fb;color:#101828;}main{background:#fff;border:1px solid #e4e7ec;border-radius:18px;padding:28px 32px;}li{margin:12px 0;}a{color:#1d4ed8;text-decoration:none;}</style>",
+        "</head><body><main><h1>Morning Radio Archive</h1><ul>",
+    ]
+    for run_dir in run_dirs:
+        summary_path = run_dir / "summary.md"
+        title = run_dir.name
+        if summary_path.exists():
+            first_line = summary_path.read_text(encoding="utf-8").splitlines()[0].replace("# ", "").strip()
+            if first_line:
+                title = first_line
+        sections.append(
+            f"<li><a href='{html.escape(run_dir.name)}/index.html'>{html.escape(title)}</a> <small>({html.escape(run_dir.name)})</small></li>"
+        )
+    sections.append("</ul></main></body></html>")
+    (output_dir / "index.html").write_text("\n".join(sections), encoding="utf-8")
 
 
 def _write_json(path: Path, payload: Any) -> None:

@@ -15,7 +15,9 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
       MORNING_RADIO_ENABLE_TTS: "true"
+      MORNING_RADIO_TTS_MODE: daily
       MORNING_RADIO_OUTPUT_DIR: output
+      MORNING_RADIO_ARCHIVE_LIMIT: "20"
       MORNING_RADIO_TIMEZONE: Asia/Seoul
     steps:
       - name: Check out repository

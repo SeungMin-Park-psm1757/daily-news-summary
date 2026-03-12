@@ -19,13 +19,18 @@ class NewsItem:
     category: str
     title: str
     source: str
+    source_domain: str
     url: str
     published_at: datetime
     summary: str
     query: str
     fingerprint: str
     score: float = 0.0
+    source_weight: float = 0.0
     resolved_url: str | None = None
+    cluster_id: str | None = None
+    cluster_size: int = 1
+    verification_flags: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
