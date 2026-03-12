@@ -129,7 +129,7 @@ CATEGORIES: tuple[CategoryDefinition, ...] = (
             "world affairs OR diplomacy OR summit OR sanctions when:1d",
         ),
         priority_terms=("중동", "정상회담", "외교", "제재", "관세", "유가", "중국", "미국"),
-        penalty_terms=("지역축제", "관광", "개최"),
+        penalty_terms=("지역축제", "관광", "개최", "wbc", "축구", "야구", "농구", "선수", "리그"),
     ),
     CategoryDefinition(
         key="military_strategy",

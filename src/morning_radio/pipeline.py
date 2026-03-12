@@ -7,6 +7,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin
 
 from morning_radio.config import AppConfig
 from morning_radio.gemini import GeminiEditor
@@ -103,8 +104,15 @@ TOKEN_ALIASES = {
     "전쟁": "conflict_action",
     "공습": "conflict_action",
     "관세": "tariff_policy",
+    "관세전쟁": "tariff_policy",
+    "무역전쟁": "tariff_policy",
     "환율": "fx_market",
+    "환율마감": "fx_market",
+    "원달러": "fx_market",
+    "달러원": "fx_market",
     "유가": "oil_market",
+    "국제유가": "oil_market",
+    "원유": "oil_market",
 }
 
 
@@ -177,11 +185,13 @@ def run_pipeline(config: AppConfig) -> Path:
     telegram_metadata: dict[str, Any] = {"sent": False}
     if config.telegram_enabled:
         try:
+            public_links = _public_links(config, run_dir, audio_path)
             telegram_metadata = send_digest_and_audio(
                 config=config,
                 digest_markdown=message_digest,
                 title=show.show_title,
                 audio_path=audio_path,
+                public_links=public_links,
             )
         except Exception as exc:  # pragma: no cover - resilience path
             telegram_metadata = {"sent": False, "error": str(exc)}
@@ -334,6 +344,17 @@ def _title_tokens(title: str) -> set[str]:
             tokens.add("joint_drill")
         if lowered.endswith("전쟁") or lowered.endswith("공격") or lowered.endswith("공습"):
             tokens.add("conflict_action")
+        if "환율" in lowered or "원달러" in lowered or "달러원" in lowered or "달러" in lowered:
+            tokens.add("fx_market")
+        if "유가" in lowered or "원유" in lowered:
+            tokens.add("oil_market")
+        if "관세" in lowered or "tariff" in lowered:
+            tokens.add("tariff_policy")
+        if "무역" in lowered and ("갈등" in lowered or "전쟁" in lowered):
+            tokens.add("tariff_policy")
+        digits = re.sub(r"\D", "", lowered)
+        if len(digits) >= 2:
+            tokens.add(f"num_{digits}")
     return tokens
 
 
@@ -799,6 +820,15 @@ def _render_summary(
     lines.append(f"- 예상 텍스트 호출 수: `{quota_log['estimated_text_calls']}`")
     lines.append(f"- 예상 TTS 호출 수: `{quota_log['estimated_tts_calls']}`")
     lines.append(f"- TTS 비트레이트: `{config.tts_bitrate_kbps} kbps`")
+    lines.append(f"- TTS 품질 모드: `{quota_log['tts_mode']}`")
+    if telegram_metadata.get("target_type"):
+        target_bits = [
+            str(telegram_metadata.get("target_type")),
+            str(telegram_metadata.get("target_title") or "").strip(),
+        ]
+        lines.append(f"- 텔레그램 대상: `{' / '.join(bit for bit in target_bits if bit)}`")
+        if telegram_metadata.get("thread_id"):
+            lines.append(f"- 텔레그램 스레드: `{telegram_metadata['thread_id']}`")
 
     lines.append("")
     lines.append("## 라디오 요약")
@@ -928,6 +958,27 @@ def _quota_log(config: AppConfig, selected_by_category: dict[str, list[NewsItem]
     }
 
 
+def _public_links(
+    config: AppConfig,
+    run_dir: Path,
+    audio_path: Path | None,
+) -> dict[str, str] | None:
+    base_url = (config.public_archive_base_url or "").strip()
+    if not base_url:
+        return None
+
+    base = base_url.rstrip("/") + "/"
+    run_prefix = f"{run_dir.name}/"
+    links = {
+        "archive": urljoin(base, f"{run_prefix}index.html"),
+        "summary": urljoin(base, f"{run_prefix}summary.md"),
+        "digest": urljoin(base, f"{run_prefix}message_digest.md"),
+    }
+    if audio_path is not None and audio_path.exists():
+        links["audio"] = urljoin(base, f"{run_prefix}{audio_path.name}")
+    return links
+
+
 def _write_run_archive_page(
     run_dir: Path,
     show: RadioShow,
@@ -987,7 +1038,7 @@ def _write_run_archive_page(
 
 def _write_archive_index(output_dir: Path, limit: int) -> None:
     run_dirs = sorted(
-        [path for path in output_dir.iterdir() if path.is_dir() and path.name.isdigit() is False],
+        [path for path in output_dir.iterdir() if path.is_dir() and re.fullmatch(r"\d{8}-\d{6}", path.name)],
         key=lambda path: path.name,
         reverse=True,
     )[:limit]

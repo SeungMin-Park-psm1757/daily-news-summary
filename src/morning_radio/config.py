@@ -31,6 +31,7 @@ class AppConfig:
     telegram_bot_token: str | None
     telegram_chat_id: str | None
     telegram_thread_id: str | None
+    telegram_silent: bool
     hours_back: int
     output_dir: Path
     editor_model: str
@@ -48,6 +49,7 @@ class AppConfig:
     tts_retry_count: int
     tts_retry_delay_seconds: int
     archive_limit: int
+    public_archive_base_url: str | None
     per_query_limit: int
     max_story_count: int
     score_threshold: float
@@ -113,6 +115,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID"),
         telegram_thread_id=os.getenv("TELEGRAM_THREAD_ID"),
+        telegram_silent=_env_bool("MORNING_RADIO_TELEGRAM_SILENT", False),
         hours_back=args.hours_back,
         output_dir=Path(args.output_dir),
         editor_model=os.getenv("MORNING_RADIO_EDITOR_MODEL", "gemini-2.5-flash"),
@@ -130,6 +133,7 @@ def load_config(args: argparse.Namespace) -> AppConfig:
         tts_retry_count=int(os.getenv("MORNING_RADIO_TTS_RETRY_COUNT", "1")),
         tts_retry_delay_seconds=int(os.getenv("MORNING_RADIO_TTS_RETRY_DELAY_SECONDS", "40")),
         archive_limit=int(os.getenv("MORNING_RADIO_ARCHIVE_LIMIT", "20")),
+        public_archive_base_url=os.getenv("MORNING_RADIO_PUBLIC_ARCHIVE_BASE_URL"),
         per_query_limit=int(os.getenv("MORNING_RADIO_PER_QUERY_LIMIT", "12")),
         max_story_count=int(os.getenv("MORNING_RADIO_MAX_STORY_COUNT", "3")),
         score_threshold=float(os.getenv("MORNING_RADIO_SCORE_THRESHOLD", "45")),

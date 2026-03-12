@@ -12,10 +12,11 @@ Morning Radio builds a weekday Korean morning news briefing from the last 24 hou
 
 - Collects recent news for Korea politics, global affairs, military strategy, weapon systems, AI, quantum, and the economy.
 - Scores articles by recency, source reliability, signal terms, and low-signal penalties.
-- Clusters near-duplicate coverage so one event is represented once.
+- Clusters near-duplicate coverage so one event is represented once, with extra signal matching for finance and geopolitical follow-ups.
 - Produces a messenger digest with a short summary and a short "why it matters" line.
 - Generates a two-speaker Korean radio script with a calm host and a brighter analyst voice.
 - Uses Gemini TTS to create an MP3 when enabled.
+- Supports Telegram private chats, groups, channels, and topic threads.
 - Writes per-run output plus an HTML archive index.
 
 ## Quick Start
@@ -63,6 +64,8 @@ The root `output/index.html` file lists recent runs as a lightweight archive pag
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TELEGRAM_THREAD_ID`
+- `MORNING_RADIO_TELEGRAM_SILENT`
+- `MORNING_RADIO_PUBLIC_ARCHIVE_BASE_URL`
 - `MORNING_RADIO_ENABLE_TTS`
 - `MORNING_RADIO_TTS_MODE`
   - `daily`: lighter weekday mode
@@ -82,6 +85,9 @@ The workflow is defined in `.github/workflows/daily-radio.yml`.
 - Schedule: weekday `06:00 KST`
 - The workflow uses `daily` TTS mode by default
 - Telegram delivery is enabled when the Telegram secrets are present
+- Optional repository variables:
+  - `MORNING_RADIO_TELEGRAM_SILENT` for quiet group or channel delivery
+  - `MORNING_RADIO_PUBLIC_ARCHIVE_BASE_URL` to append archive links in Telegram
 
 Required secrets:
 
@@ -89,6 +95,12 @@ Required secrets:
 - `TELEGRAM_BOT_TOKEN`
 - `TELEGRAM_CHAT_ID`
 - `TELEGRAM_THREAD_ID` only for topic-based groups
+
+Group and channel notes:
+
+- Use a group or channel `chat_id` to broadcast the same digest to everyone in that destination.
+- Use `TELEGRAM_THREAD_ID` only for topic-enabled supergroups.
+- When `MORNING_RADIO_PUBLIC_ARCHIVE_BASE_URL` is set, Telegram messages include direct links to the run archive, digest, summary, and audio file when available.
 
 ## Notes
 
