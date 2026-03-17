@@ -5,6 +5,10 @@ on:
   schedule:
     - cron: "0 21 * * 0-4"
 
+concurrency:
+  group: daily-morning-radio-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-radio:
     runs-on: ubuntu-latest
@@ -44,7 +48,7 @@ jobs:
 
       - name: Publish run summary
         run: |
-          latest_dir="$(ls -1 output | sort | tail -n 1)"
+          latest_dir="$(find output -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1)"
           cat "output/${latest_dir}/summary.md" >> "$GITHUB_STEP_SUMMARY"
         shell: bash
 

@@ -21,9 +21,8 @@ def send_digest_and_audio(
     public_links: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     chat_info = _get_chat_info(config)
-    text = _markdown_to_telegram_html(digest_markdown)
-    text = _append_public_links(text, public_links)
-    message_ids = _send_text_chunks(config, text)
+    text = _prepare_single_text_message(digest_markdown, public_links)
+    message_ids = [_send_text_message(config, text)]
 
     audio_result = None
     audio_mode = None
@@ -74,30 +73,46 @@ def _get_chat_info(config: AppConfig) -> dict[str, Any]:
     }
 
 
-def _send_text_chunks(config: AppConfig, text: str) -> list[int]:
-    chunks = _chunk_text(text, TELEGRAM_MAX_MESSAGE)
-    message_ids: list[int] = []
-    for chunk in chunks:
-        payload: dict[str, Any] = {
-            "chat_id": config.telegram_chat_id,
-            "text": chunk,
-            "disable_web_page_preview": True,
-            "disable_notification": config.telegram_silent,
-            "parse_mode": "HTML",
-        }
-        if config.telegram_thread_id:
-            payload["message_thread_id"] = config.telegram_thread_id
-        response = requests.post(
-            _telegram_url(config, "sendMessage"),
-            data=payload,
-            timeout=30,
+def _send_text_message(config: AppConfig, text: str) -> int:
+    payload: dict[str, Any] = {
+        "chat_id": config.telegram_chat_id,
+        "text": text,
+        "disable_web_page_preview": True,
+        "disable_notification": config.telegram_silent,
+        "parse_mode": "HTML",
+    }
+    if config.telegram_thread_id:
+        payload["message_thread_id"] = config.telegram_thread_id
+    response = requests.post(
+        _telegram_url(config, "sendMessage"),
+        data=payload,
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
+    if not data.get("ok"):
+        raise ValueError(f"Telegram sendMessage failed: {data}")
+    return int(data["result"]["message_id"])
+
+
+def _prepare_single_text_message(markdown: str, public_links: dict[str, str] | None) -> str:
+    variants = (
+        {"include_why": True, "include_meta": False},
+        {"include_why": False, "include_meta": False},
+    )
+    for variant in variants:
+        text = _markdown_to_telegram_html(
+            markdown,
+            include_why=variant["include_why"],
+            include_meta=variant["include_meta"],
         )
-        response.raise_for_status()
-        data = response.json()
-        if not data.get("ok"):
-            raise ValueError(f"Telegram sendMessage failed: {data}")
-        message_ids.append(int(data["result"]["message_id"]))
-    return message_ids
+        text = _append_public_links(text, public_links)
+        if len(text) <= TELEGRAM_MAX_MESSAGE:
+            return text
+
+    compact_text = _markdown_to_telegram_html(markdown, include_why=False, include_meta=False)
+    compact_text = _append_public_links(compact_text, public_links)
+    return _truncate_html_message(compact_text, TELEGRAM_MAX_MESSAGE)
 
 
 def _send_audio(config: AppConfig, audio_path: Path, *, caption: str) -> dict[str, Any]:
@@ -171,7 +186,12 @@ def _append_public_links(text: str, public_links: dict[str, str] | None) -> str:
     return f"{text}\n\n" + "\n".join(link_lines)
 
 
-def _markdown_to_telegram_html(markdown: str) -> str:
+def _markdown_to_telegram_html(
+    markdown: str,
+    *,
+    include_why: bool = True,
+    include_meta: bool = True,
+) -> str:
     lines: list[str] = []
     for raw_line in markdown.splitlines():
         line = raw_line.rstrip()
@@ -181,6 +201,10 @@ def _markdown_to_telegram_html(markdown: str) -> str:
         if line.startswith("## "):
             lines.append("")
             lines.append(f"<b>{html.escape(line[3:])}</b>")
+            continue
+        if line.startswith("  왜 중요하나:") and not include_why:
+            continue
+        if line.startswith("  메모:") and not include_meta:
             continue
         if line.startswith("- **") and line.endswith("**"):
             title = line[4:-2]
@@ -198,39 +222,16 @@ def _inline_markdown_to_html(text: str) -> str:
     return re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
 
 
-def _chunk_text(text: str, limit: int) -> list[str]:
+def _truncate_html_message(text: str, limit: int) -> str:
     if len(text) <= limit:
-        return [text]
+        return text
 
-    chunks: list[str] = []
-    current = ""
-    for paragraph in text.split("\n\n"):
-        candidate = paragraph if not current else f"{current}\n\n{paragraph}"
-        if len(candidate) <= limit:
-            current = candidate
-            continue
-        if current:
-            chunks.append(current)
-            current = ""
-        if len(paragraph) <= limit:
-            current = paragraph
-            continue
-
-        lines = paragraph.splitlines()
-        partial = ""
-        for line in lines:
-            candidate_line = line if not partial else f"{partial}\n{line}"
-            if len(candidate_line) <= limit:
-                partial = candidate_line
-                continue
-            if partial:
-                chunks.append(partial)
-            partial = line
-        current = partial
-
-    if current:
-        chunks.append(current)
-    return chunks
+    plain = re.sub(r"<[^>]+>", "", text)
+    plain = html.unescape(plain)
+    trimmed = plain[: max(0, limit - 1)].rstrip()
+    if trimmed.endswith("…"):
+        return html.escape(trimmed)
+    return html.escape(trimmed + "…")
 
 
 def _telegram_url(config: AppConfig, method: str) -> str:
