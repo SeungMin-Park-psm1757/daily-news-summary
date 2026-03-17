@@ -148,27 +148,27 @@ Return exactly one JSON object.
 
 Required JSON shape:
 {{
-  "lead": "1-3 Korean sentences",
+  "lead": "2-4 Korean sentences",
   "stories": [
     {{
       "headline": "string",
-      "angle": "1-2 Korean sentences",
+      "angle": "2-3 Korean sentences",
       "message_summary": "1 Korean sentence for messenger delivery",
-      "why_it_matters": "1 short Korean sentence",
+      "why_it_matters": "1-2 short Korean sentences",
       "verification_note": "short Korean note or empty string",
       "source_urls": ["url"]
     }}
   ],
-  "watch": "1 Korean sentence"
+  "watch": "1-2 Korean sentences"
 }}
 
 Rules:
 - Write all text fields in natural Korean.
 - Pick up to {max_story_count} stories, prioritizing high score, reliable sources, and bigger clusters.
-- `lead` should summarize the category's main movement, not list headlines.
-- `angle` should explain the actual development, not rephrase the headline.
+- `lead` should summarize the category's main movement, not list headlines, and add one extra sentence of context or implication.
+- `angle` should explain the actual development, not rephrase the headline, and should be slightly more explanatory than a terse bulletin.
 - `message_summary` should be compact, readable in a messenger, avoid headline duplication, and bold only the 1-2 most important changes using **...**.
-- `why_it_matters` should be shorter than `angle`.
+- `why_it_matters` should stay shorter than `angle`, but it may use two short sentences when needed.
 - `verification_note` should be empty if not needed. Use a short note such as "숫자와 인용은 원문 확인 필요" only when the metadata suggests extra caution.
 - Never invent quotes, figures, motives, battlefield details, or unnamed-source claims.
 - If details are thin, say the story is still developing.
@@ -225,7 +225,7 @@ Required JSON shape:
 {{
   "show_title": "string",
   "show_summary": "up to 2 Korean sentences",
-  "estimated_minutes": 6-10,
+  "estimated_minutes": 5-7,
   "script_markdown": "markdown string"
 }}
 
@@ -234,14 +234,16 @@ Script rules:
 - Use the opening pair exactly as written.
 - For each category, follow this rhythm:
   1. HOST setup question
-  2. ANALYST concise answer in 1-3 sentences
+  2. ANALYST answer in 2-4 sentences
   3. HOST short follow-up
-  4. ANALYST answer that explains why it matters or what to watch
+  4. ANALYST answer in 2-3 sentences that explains why it matters or what to watch
+- Aim for a final spoken runtime around five minutes at a brisk morning-radio pace.
 - Make it feel like polished live radio: crisp back-and-forth, brief acknowledgements, and no long monologues.
 - Vary transitions and category handoffs so the show does not sound repetitive.
 - Let the host sound steady and framing-focused; let the analyst sound quick, bright, and insight-driven.
 - Do not mechanically repeat headlines.
 - Focus on what changed, why it matters, and what to watch next.
+- Let each category breathe slightly longer than a headline recap by adding one more sentence of context or consequence.
 - Do not include operational filler such as "we picked the top three stories."
 - If `quiet_categories` is not empty, mention those categories once near the end in a single short exchange.
 - Do not include URLs in the script.

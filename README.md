@@ -76,7 +76,15 @@ The root `output/index.html` file lists recent runs as a lightweight archive pag
 - `MORNING_RADIO_TTS_TURN_PAUSE`
 - `MORNING_RADIO_TTS_RETRY_COUNT`
 - `MORNING_RADIO_TTS_RETRY_DELAY_SECONDS`
+- `MORNING_RADIO_SCORE_THRESHOLD`
+- `MORNING_RADIO_MAX_STORY_COUNT`
 - `MORNING_RADIO_ARCHIVE_LIMIT`
+
+Current weekday defaults are tuned for a denser daily brief:
+
+- score threshold `40`
+- up to `4` stories per populated category
+- TTS pace `1.27x`
 
 ## GitHub Actions
 
@@ -84,6 +92,7 @@ The workflow is defined in `.github/workflows/daily-radio.yml`.
 
 - Schedule: weekday `06:00 KST`
 - The workflow uses `daily` TTS mode by default
+- The workflow pins score threshold `40`, max story count `4`, and TTS speed `1.27`
 - Telegram delivery is enabled when the Telegram secrets are present
 - Optional repository variables:
   - `MORNING_RADIO_TELEGRAM_SILENT` for quiet group or channel delivery

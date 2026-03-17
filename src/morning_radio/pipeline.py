@@ -510,7 +510,7 @@ def _fallback_show(
     return RadioShow(
         show_title=f"{local_date} 아침 뉴스 라디오",
         show_summary=f"{start_utc.isoformat()}부터 {end_utc.isoformat()}까지의 뉴스 가운데 상위 기사만 추린 브리핑입니다.",
-        estimated_minutes=7,
+        estimated_minutes=6,
         script_markdown=script_markdown,
         script_plaintext=script_markdown.replace("# ", ""),
         quiet_categories=quiet_categories,
@@ -518,19 +518,20 @@ def _fallback_show(
 
 
 def _compose_lead(label: str, stories: list[dict[str, Any]]) -> str:
-    summaries = [_ensure_sentence(story["angle"]) for story in stories[:3]]
+    summaries = [_ensure_sentence(story["angle"]) for story in stories[:4]]
     if len(summaries) == 1:
         return summaries[0]
     if len(summaries) == 2:
         return f"{summaries[0]} {summaries[1]}"
-    return f"{summaries[0]} {summaries[1]} {summaries[2]}"
+    return " ".join(summary for summary in summaries if summary)
 
 
 def _compose_follow_up_answer(label: str, stories: list[dict[str, Any]]) -> str:
     primary = stories[0]
+    primary_angle = _first_sentence(_ensure_sentence(primary["angle"]))
     reason = _ensure_sentence(primary["why_it_matters"])
     follow_up = _ensure_sentence(_watch_message(label))
-    return f"특히 첫 번째 이슈가 중요합니다. {reason} {follow_up}"
+    return f"특히 첫 번째 이슈가 중요합니다. {primary_angle} {reason} {follow_up}"
 
 
 def _follow_up_question(label: str, stories: list[dict[str, Any]]) -> str:
