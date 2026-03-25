@@ -14,7 +14,7 @@ Morning Radio builds a weekday Korean morning news briefing from the last 24 hou
 - Scores articles by recency, source reliability, signal terms, and low-signal penalties.
 - Clusters near-duplicate coverage so one event is represented once, with extra signal matching for finance and geopolitical follow-ups.
 - Produces a messenger digest with a short summary and a short "why it matters" line.
-- Generates a two-speaker Korean radio script with a calm host and a brighter analyst voice.
+- Generates a two-speaker Korean radio script with a lively host and an energetic analyst voice.
 - Uses Gemini TTS to create an MP3 when enabled.
 - Supports Telegram private chats, groups, channels, and topic threads.
 - Writes per-run output plus an HTML archive index.
